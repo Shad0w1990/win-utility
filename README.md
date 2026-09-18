@@ -32,6 +32,21 @@ SysGuard Ultimate is a lightweight, blazing-fast Windows utility and hardware mo
 
 ---
 
+## ☕ Support the Developer / حمایت از توسعه‌دهنده
+
+If you find this utility useful and want to support the project, you can buy me a coffee! ☕
+
+اگر این ابزار برایتان مفید بوده و خواستید از توسعه پروژه حمایت کنید، می‌توانید از راه‌های زیر اقدام کنید:
+
+*   **🇮🇷 شبکه شتاب (ایران):**
+    *   شماره کارت: `6104-3377-6761-3068` (به نام احسان خرسند)
+*   **🌐 Tether (USDT - TRC20 / Tron):**
+    *   `TCzZtuWEwZfcWa3wKHGYjwHZrSPL6DW7C`
+*   **💎 TON Network:**
+    *   `UQB-5yLspFNXmvEXR4DP955To-D3hn2b0Rc3p7BNCqfzZAtF`
+
+---
+
 ## 🛠️ Tech Stack & Architecture
 
 - **Language:** Go (Golang)

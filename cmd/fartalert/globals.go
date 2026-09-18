@@ -78,6 +78,8 @@ var (
 	sysIPAddress   = "IPv4: Detecting..."
 
 	telemetryHistory []TelemetryData
+
+	hwndBtnCopyIran, hwndBtnCopyTron, hwndBtnCopyTon syscall.Handle
 )
 
 type TelemetryData struct {

@@ -91,7 +91,6 @@ func updateTabButtonsVisibility() {
 	}
 	procShowWindow.Call(uintptr(hwndBtnSysInfo), uintptr(swD))
 
-	// دکمه‌های جدید نگهداری فقط در تب Tools نمایش داده می‌شوند
 	showTools := (isAsus && currentPage == 4) || (!isAsus && currentPage == 3)
 	swT := SW_HIDE
 	if showTools {
@@ -115,6 +114,9 @@ func updateTabButtonsVisibility() {
 	procShowWindow.Call(uintptr(hwndBtnLang), uintptr(swS))
 	procShowWindow.Call(uintptr(hwndBtnSoundToggle), uintptr(swS))
 	procShowWindow.Call(uintptr(hwndBtnStartup), uintptr(swS))
+	procShowWindow.Call(uintptr(hwndBtnCopyIran), uintptr(swS))
+	procShowWindow.Call(uintptr(hwndBtnCopyTron), uintptr(swS))
+	procShowWindow.Call(uintptr(hwndBtnCopyTon), uintptr(swS))
 
 	if hwndTabDash != 0 {
 		procInvalidateRect.Call(uintptr(hwndTabDash), 0, 1)
@@ -280,7 +282,6 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 		dis := (*DRAWITEMSTRUCT)(unsafe.Pointer(lParam))
 		if dis.CtlType == ODT_BUTTON {
 
-			// --- رندر کردن کارت‌های اطلاعاتی نگهداری سیستم ---
 			isMaintenanceBtn := (dis.CtlID >= 1001 && dis.CtlID <= 1006) && dis.CtlID != IDC_BTN_SYSINFO
 			if isMaintenanceBtn {
 				currentLoading := atomic.LoadUint32(&loadingButtonID)
@@ -292,24 +293,24 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 				switch dis.CtlID {
 				case IDC_BTN_SOUND:
 					borderColor = RGB(200, 80, 255)
-					title = T("🔊 Audio Test", "🔊 تست موتور صدا")
-					desc = T("Sends a signal to wake and test audio drivers.", "ارسال سیگنال برای تست درایور کارت صدا.")
+					title = T("🔊 Audio Test", "🔊 تست کارت صدا")
+					desc = T("Wake up and test audio drivers.", "ارسال سیگنال برای تست درایور صوتی.")
 				case IDC_BTN_DIAG:
 					borderColor = RGB(0, 200, 255)
 					title = T("🔄 Force Sync", "🔄 همگام‌سازی")
-					desc = T("Syncs system clock & flushes stale DNS cache.", "تنظیم دقیق ساعت و پاکسازی کش اینترنت.")
+					desc = T("Syncs system clock & flushes DNS.", "تنظیم دقیق ساعت و پاکسازی کش اینترنت.")
 				case IDC_BTN_CLEAN:
 					borderColor = RGB(255, 140, 50)
-					title = T("🧹 Deep Clean", "🧹 پاکسازی عمیق")
-					desc = T("Frees up space by deleting temporary & junk files.", "حذف فایل‌های موقت و آزادسازی فضای هارد.")
+					title = T("🧹 Deep OS Clean", "🧹 پاکسازی عمیق")
+					desc = T("Clears temp files & frees up memory.", "حذف فایل‌های موقت و آزادسازی حافظه.")
 				case IDC_BTN_ANALYZE:
 					borderColor = RGB(0, 255, 150)
-					title = T("⚙️ Hardware Limits", "⚙️ آنالیز گلوگاه قطعات")
+					title = T("⚙️ Hardware Bottleneck", "⚙️ آنالیز گلوگاه قطعات")
 					desc = T("Analyzes 7-day telemetry to find weak components.", "تحلیل دیتای ۷ روزه برای تشخیص قطعه ضعیف سیستم.")
 				case IDC_BTN_EVENT_LOG:
 					borderColor = RGB(255, 80, 100)
-					title = T("🧠 AI Error Diagnostic", "🧠 هوش مصنوعی سیستم")
-					desc = T("Scans hidden OS logs and finds solutions via AI.", "کشف خطاهای پنهان ویندوز با هوش مصنوعی.")
+					title = T("🧠 AI Error Scanner", "🧠 هوش مصنوعی سیستم")
+					desc = T("Finds hidden OS errors via Gemini AI.", "کشف خطاهای پنهان ویندوز با هوش مصنوعی.")
 				}
 
 				fillColor := uint32(RGB(15, 20, 30))
@@ -330,14 +331,12 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 					drawRect(uintptr(dis.Hdc), int(dis.RcItem.Left)+2, int(dis.RcItem.Top)+2, int(dis.RcItem.Right)-2, int(dis.RcItem.Bottom)-2, 12, fillColor)
 				}
 
-				// رندر تایتل دکمه
 				rTitle := RECT{Left: dis.RcItem.Left + 5, Top: dis.RcItem.Top + 14, Right: dis.RcItem.Right - 5, Bottom: dis.RcItem.Bottom}
 				procSelectObject.Call(uintptr(dis.Hdc), uintptr(hFontNormal))
 				procSetBkMode.Call(uintptr(dis.Hdc), uintptr(TRANSPARENT))
 				procSetTextColor.Call(uintptr(dis.Hdc), uintptr(txtColor))
 				DrawTextSafe(uintptr(dis.Hdc), title, &rTitle, DT_CENTER|DT_TOP|DT_SINGLELINE)
 
-				// رندر توضیحات با فونت ریزتر
 				rDesc := RECT{Left: dis.RcItem.Left + 8, Top: dis.RcItem.Top + 38, Right: dis.RcItem.Right - 8, Bottom: dis.RcItem.Bottom}
 				procSelectObject.Call(uintptr(dis.Hdc), uintptr(hFontSmall))
 				descColor := uint32(RGB(140, 150, 160))
@@ -345,12 +344,11 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 					descColor = txtColor
 				}
 				procSetTextColor.Call(uintptr(dis.Hdc), uintptr(descColor))
-				DrawTextSafe(uintptr(dis.Hdc), desc, &rDesc, DT_CENTER|DT_TOP|0x00000010) // 0x10 = DT_WORDBREAK
+				DrawTextSafe(uintptr(dis.Hdc), desc, &rDesc, DT_CENTER|DT_TOP|0x00000010)
 
 				return 1
 			}
 
-			// --- رندر دکمه‌های تب‌ها و تنظیمات ---
 			if dis.CtlID == IDC_BTN_SYSINFO {
 				currentLoading := atomic.LoadUint32(&loadingButtonID)
 				isDown := (dis.ItemState & ODS_SELECTED) != 0
@@ -375,6 +373,45 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 				}
 
 				procSelectObject.Call(uintptr(dis.Hdc), uintptr(hFontNormal))
+				procSetBkMode.Call(uintptr(dis.Hdc), uintptr(TRANSPARENT))
+				procSetTextColor.Call(uintptr(dis.Hdc), uintptr(txtColor))
+				DrawTextSafe(uintptr(dis.Hdc), text, &dis.RcItem, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
+				return 1
+			}
+
+			// استایل دکمه‌های کپی دونیت
+			isDonateBtn := dis.CtlID == IDC_COPY_IRAN || dis.CtlID == IDC_COPY_TRON || dis.CtlID == IDC_COPY_TON
+			if isDonateBtn {
+				isDown := (dis.ItemState & ODS_SELECTED) != 0
+				var borderColor uint32
+				text := ""
+
+				switch dis.CtlID {
+				case IDC_COPY_IRAN:
+					borderColor = RGB(0, 255, 150)
+					text = T("📋 Copy Card", "📋 کپی کارت")
+				case IDC_COPY_TRON:
+					borderColor = RGB(255, 140, 50)
+					text = T("📋 Copy Tron", "📋 کپی ترون")
+				case IDC_COPY_TON:
+					borderColor = RGB(0, 210, 255)
+					text = T("📋 Copy TON", "📋 کپی تون")
+				}
+
+				fillColor := uint32(RGB(15, 20, 30))
+				txtColor := borderColor
+
+				if isDown {
+					fillColor = borderColor
+					txtColor = RGB(10, 14, 25)
+				}
+
+				drawRect(uintptr(dis.Hdc), int(dis.RcItem.Left), int(dis.RcItem.Top), int(dis.RcItem.Right), int(dis.RcItem.Bottom), 10, borderColor)
+				if fillColor != borderColor {
+					drawRect(uintptr(dis.Hdc), int(dis.RcItem.Left)+2, int(dis.RcItem.Top)+2, int(dis.RcItem.Right)-2, int(dis.RcItem.Bottom)-2, 8, fillColor)
+				}
+
+				procSelectObject.Call(uintptr(dis.Hdc), uintptr(hFontWidget))
 				procSetBkMode.Call(uintptr(dis.Hdc), uintptr(TRANSPARENT))
 				procSetTextColor.Call(uintptr(dis.Hdc), uintptr(txtColor))
 				DrawTextSafe(uintptr(dis.Hdc), text, &dis.RcItem, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
@@ -459,6 +496,17 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 			case IDC_SET_STARTUP:
 				toggleStartup()
 				procInvalidateRect.Call(uintptr(hwndBtnStartup), 0, 1)
+
+			// عملیات کپی دونیت‌ها با شماره کارت جدید شما
+			case IDC_COPY_IRAN:
+				copyToClipboardNative("شماره کارت: 6104-3377-6761-3068\nبه نام: احسان خرسند")
+				ShowMessageBox(hwndMain, T("Iranian card number copied to clipboard.", "شماره کارت ریالی با موفقیت کپی شد."), "Copied", 0x00000040)
+			case IDC_COPY_TRON:
+				copyToClipboardNative("TCzZtuWEwZfcWa3wKHGYjwHZrSPL6DW7C")
+				ShowMessageBox(hwndMain, T("USDT (TRC20) address copied to clipboard.", "آدرس تتر شبکه Tron (TRC20) کپی شد."), "Copied", 0x00000040)
+			case IDC_COPY_TON:
+				copyToClipboardNative("UQB-5yLspFNXmvEXR4DP955To-D3hn2b0Rc3p7BNCqfzZAtF")
+				ShowMessageBox(hwndMain, T("TON address copied to clipboard.", "آدرس شبکه TON کپی شد."), "Copied", 0x00000040)
 
 			case IDC_TOOL_PWR_SAVE:
 				if strings.EqualFold(sysPowerPlanGUID, "a1841308-3541-4fab-bc81-f71556f20b4a") {
@@ -578,7 +626,7 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 						ShowMessageBox(hwndMain, T("System Time synced and DNS Cache flushed successfully.", "ساعت ویندوز و کش اینترنت با موفقیت همگام‌سازی شدند."), T("Force Sync", "همگام‌سازی"), 0x00000040)
 					}()
 				}
-			case IDC_BTN_ANALYZE: // برگشت سیستم آنالیز سخت‌افزاری بر اساس تلمتری
+			case IDC_BTN_ANALYZE:
 				if atomic.LoadUint32(&loadingButtonID) == 0 {
 					atomic.StoreUint32(&loadingButtonID, IDC_BTN_ANALYZE)
 					go func() {
@@ -1055,7 +1103,6 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 				cRect4Val := RECT{Left: 715, Top: 287, Right: 780, Bottom: 310}
 				DrawTextSafe(hdc, fmt.Sprintf("%d%%", sysVolumeVal), &cRect4Val, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
 
-				// پنل اختصاصی و وسیع برای کارت‌های نگهداری سیستم
 				drawRect(hdc, 210, 365, 790, 580, 12, panelColor)
 				setTextColor(hdc, RGB(0, 210, 255))
 				cRect5 := RECT{Left: 230, Top: 380, Right: 770, Bottom: 420}
@@ -1077,6 +1124,37 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 
 				cRectS.Top = 255
 				DrawTextSafe(hdc, T("Run SysGuard automatically when Windows starts.", "اجرای خودکار برنامه هنگام روشن شدن ویندوز."), &cRectS, DT_LEFT|DT_TOP)
+
+				setTextColor(hdc, RGB(0, 210, 255))
+				cRectD := RECT{Left: 210, Top: 340, Right: rect.Right - 30, Bottom: 370}
+				DrawTextSafe(hdc, T("☕ SUPPORT THE DEVELOPER", "☕ حمایت از توسعه‌دهنده (Donate)"), &cRectD, DT_LEFT|DT_TOP)
+
+				// پنل شبکه شتاب (ریالی)
+				drawRect(hdc, 210, 380, int(rect.Right)-30, 445, 10, panelColor)
+				setTextColor(hdc, RGB(0, 255, 150))
+				rIrTitle := RECT{Left: 230, Top: 393, Right: 500, Bottom: 415}
+				DrawTextSafe(hdc, T("💳 Iranian Users (Shetab)", "💳 کاربران داخل ایران (شبکه شتاب)"), &rIrTitle, DT_LEFT|DT_TOP)
+				setTextColor(hdc, RGB(220, 235, 255))
+				rIrNum := RECT{Left: 230, Top: 416, Right: 600, Bottom: 438}
+				DrawTextSafe(hdc, "6104-3377-6761-3068  |  Ehsan Khorsand", &rIrNum, DT_LEFT|DT_TOP)
+
+				// پنل تتر Tron (TRC20)
+				drawRect(hdc, 210, 455, int(rect.Right)-30, 520, 10, panelColor)
+				setTextColor(hdc, RGB(255, 140, 50))
+				rTrTitle := RECT{Left: 230, Top: 468, Right: 500, Bottom: 490}
+				DrawTextSafe(hdc, T("🌐 USDT - Tron (TRC20)", "🌐 تتر - شبکه ترون (TRC20)"), &rTrTitle, DT_LEFT|DT_TOP)
+				setTextColor(hdc, RGB(220, 235, 255))
+				rTrNum := RECT{Left: 230, Top: 491, Right: 600, Bottom: 513}
+				DrawTextSafe(hdc, "TCzZtuWEwZfcWa3wKHGYjwHZrSPL6DW7C", &rTrNum, DT_LEFT|DT_TOP)
+
+				// پنل شبکه TON
+				drawRect(hdc, 210, 530, int(rect.Right)-30, 595, 10, panelColor)
+				setTextColor(hdc, RGB(0, 210, 255))
+				rTonTitle := RECT{Left: 230, Top: 543, Right: 500, Bottom: 565}
+				DrawTextSafe(hdc, T("💎 TON Network", "💎 شبکه تون (TON)"), &rTonTitle, DT_LEFT|DT_TOP)
+				setTextColor(hdc, RGB(220, 235, 255))
+				rTonNum := RECT{Left: 230, Top: 566, Right: 600, Bottom: 588}
+				DrawTextSafe(hdc, "UQB-5yLspFNXmvEXR4DP955To-D3hn2b0Rc3p7BNCqfzZAtF", &rTonNum, DT_LEFT|DT_TOP)
 			}
 
 			procEndPaint.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&ps)))
@@ -1104,7 +1182,7 @@ func createAndShowGUI() {
 	hFontNormal = createModernFont(15, 400)
 	hFontTitle = createModernFont(26, 700)
 	hFontWidget = createModernFont(14, 600)
-	hFontSmall = createModernFont(12, 400) // فونت ریز برای توضیحات درون دکمه‌ها
+	hFontSmall = createModernFont(12, 400)
 
 	inst, _, _ := procGetModuleHandle.Call(0)
 	className, _ := syscall.UTF16PtrFromString("SysGuardClass")
@@ -1119,10 +1197,9 @@ func createAndShowGUI() {
 	}
 	procRegisterClassEx.Call(uintptr(unsafe.Pointer(&wc)))
 
-	// افزایش نامحسوس ارتفاع پنجره برای جا دادن کارت‌های بزرگ‌تر
 	hwndPtr, _, _ := procCreateWindow.Call(0, uintptr(unsafe.Pointer(className)), uintptr(unsafe.Pointer(windowName)),
 		uintptr(WS_OVERLAPPEDWINDOW|WS_VISIBLE|WS_CLIPCHILDREN), uintptr(CW_USEDEFAULT), uintptr(CW_USEDEFAULT),
-		950, 680, 0, 0, inst, 0)
+		950, 640, 0, 0, inst, 0)
 
 	hwndMain = syscall.Handle(hwndPtr)
 	setWindowIcon(hwndMain, "icon.ico")
@@ -1158,16 +1235,18 @@ func createAndShowGUI() {
 	hwndBtnSoundToggle = createControl(hwndMain, IDC_SET_SOUND, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 230, 170, 250, 50)
 	hwndBtnStartup = createControl(hwndMain, IDC_SET_STARTUP, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 230, 240, 250, 50)
 
+	// ۳ دکمه کپی برای بخش حمایت مالی (ریالی، ترون، تون)
+	hwndBtnCopyIran = createControl(hwndMain, IDC_COPY_IRAN, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 630, 385, 140, 35)
+	hwndBtnCopyTron = createControl(hwndMain, IDC_COPY_TRON, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 630, 460, 140, 35)
+	hwndBtnCopyTon = createControl(hwndMain, IDC_COPY_TON, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 630, 535, 140, 35)
+
 	hwndBtnPwrSave = createControl(hwndMain, IDC_TOOL_PWR_SAVE, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 520, 165, 80, 35)
 	hwndBtnPwrBal = createControl(hwndMain, IDC_TOOL_PWR_BAL, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 610, 165, 80, 35)
 	hwndBtnPwrHigh = createControl(hwndMain, IDC_TOOL_PWR_HIGH, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 700, 165, 80, 35)
 
-	// ردیف اول: ۳ دکمه (صدا، کش، کلین)
 	hwndBtnSound = createControl(hwndMain, IDC_BTN_SOUND, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 230, 410, 175, 70)
 	hwndBtnDiag = createControl(hwndMain, IDC_BTN_DIAG, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 415, 410, 175, 70)
 	hwndBtnClean = createControl(hwndMain, IDC_BTN_CLEAN, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 600, 410, 175, 70)
-
-	// ردیف دوم: ۲ دکمه پهن و تخصصی (آنالیز سخت‌افزار و هوش مصنوعی)
 	hwndBtnAnalyze = createControl(hwndMain, IDC_BTN_ANALYZE, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 230, 490, 265, 70)
 	hwndBtnEventLog = createControl(hwndMain, IDC_BTN_EVENT_LOG, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 510, 490, 265, 70)
 
@@ -1412,7 +1491,6 @@ func drawCustomButton(dis *DRAWITEMSTRUCT) {
 			drawRect(uintptr(dis.Hdc), int(dis.RcItem.Left)+2, int(dis.RcItem.Top)+2, int(dis.RcItem.Right)-2, int(dis.RcItem.Bottom)-2, 12, fillColor)
 		}
 
-		// اگر دکمه‌های بزرگ نگهداری سیستم بود، دو خط مجزا رسم کن
 		if isMaintenanceBtn {
 			rTitle := RECT{Left: dis.RcItem.Left + 5, Top: dis.RcItem.Top + 12, Right: dis.RcItem.Right - 5, Bottom: dis.RcItem.Bottom}
 			procSelectObject.Call(uintptr(dis.Hdc), uintptr(hFontNormal))
@@ -1427,7 +1505,7 @@ func drawCustomButton(dis *DRAWITEMSTRUCT) {
 				descColor = txtColor
 			}
 			procSetTextColor.Call(uintptr(dis.Hdc), uintptr(descColor))
-			DrawTextSafe(uintptr(dis.Hdc), desc, &rDesc, DT_CENTER|DT_TOP|0x00000010) // 0x10 = DT_WORDBREAK
+			DrawTextSafe(uintptr(dis.Hdc), desc, &rDesc, DT_CENTER|DT_TOP|0x00000010)
 		} else {
 			procSelectObject.Call(uintptr(dis.Hdc), uintptr(hFontNormal))
 			procSetBkMode.Call(uintptr(dis.Hdc), uintptr(TRANSPARENT))
