@@ -118,13 +118,13 @@ func fetchTopSystemErrors() {
 $ErrorActionPreference = 'SilentlyContinue'
 $events = Get-WinEvent -FilterHashtable @{LogName='System'; Level=1,2; StartTime=(Get-Date).AddDays(-7)} -MaxEvents 2000
 if ($events) {
-	$events | Group-Object Id, ProviderName | Sort-Object Count -Descending | Select-Object -First 5 | ForEach-Object {
-		$sample = $_.Group[0]
-		$msg = [string]$sample.Message -replace "` + "`" + `r` + "`" + `n", " " -replace "\|", "-"
-		$lvl = [string]$sample.LevelDisplayName
-		if ([string]::IsNullOrEmpty($lvl)) { $lvl = "Error" }
-		Write-Output "$($sample.Id)|$($sample.ProviderName)|$($_.Count)|$msg|$lvl"
-	}
+    $events | Group-Object Id, ProviderName | Sort-Object Count -Descending | Select-Object -First 5 | ForEach-Object {
+        $sample = $_.Group[0]
+        $msg = [string]$sample.Message -replace "` + "`" + `r` + "`" + `n", " " -replace "\|", "-"
+        $lvl = [string]$sample.LevelDisplayName
+        if ([string]::IsNullOrEmpty($lvl)) { $lvl = "Error" }
+        Write-Output "$($sample.Id)|$($sample.ProviderName)|$($_.Count)|$msg|$lvl"
+    }
 }
 `
 	cmd := exec.Command("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script)
@@ -234,7 +234,8 @@ func wndProcAnalyzer(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) u
 					playUIClick()
 					prompt := generateAIPrompt(analyzerErrors[idx])
 					copyToClipboardNative(prompt)
-					ShowMessageBox(hwnd, T("Log data and prompt copied to clipboard!", "اطلاعات لاگ و دستورات با موفقیت کپی شد!"), "Copied", 0x00000040)
+					// فراخوانی پاپ‌آپ مدرن با رنگ سبز نئونی
+					ShowModernAlert(hwnd, T("Log data and prompt copied to clipboard!", "اطلاعات لاگ و دستورات با موفقیت کپی شد!"), T("Copied", "کپی شد"), RGB(0, 255, 150))
 				}
 			}
 		}

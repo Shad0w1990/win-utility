@@ -69,11 +69,11 @@ const (
 
 	IDC_BTN_SOUND     = 1001
 	IDC_BTN_DIAG      = 1002
-	IDC_BTN_ANALYZE   = 1003 // آنالیز قطعات سخت‌افزار
+	IDC_BTN_ANALYZE   = 1003
 	IDC_BTN_CLEAN     = 1004
 	IDC_CHK_WIDGET    = 3001
 	IDC_BTN_SYSINFO   = 1005
-	IDC_BTN_EVENT_LOG = 1006 // دکمه جدید برای هوش مصنوعی خطاها
+	IDC_BTN_EVENT_LOG = 1006
 
 	IDC_MODE_SILENT   = 4001
 	IDC_MODE_BALANCED = 4002
@@ -109,6 +109,10 @@ const (
 	XINPUT_GAMEPAD_X              = 0x4000
 	XINPUT_GAMEPAD_Y              = 0x8000
 
+	IDC_COPY_IRAN = 9021
+	IDC_COPY_TRON = 9022
+	IDC_COPY_TON  = 9023
+
 	IDC_ASK_AI_1 = 9001
 	IDC_ASK_AI_2 = 9002
 	IDC_ASK_AI_3 = 9003
@@ -120,7 +124,14 @@ const (
 	IDC_COPY_ERR_3 = 9013
 	IDC_COPY_ERR_4 = 9014
 	IDC_COPY_ERR_5 = 9015
-	IDC_COPY_IRAN  = 9021
-	IDC_COPY_TRON  = 9022
-	IDC_COPY_TON   = 9023
+
+	IDC_SET_CLICK_SOUND = 5006
+	IDC_SET_ALARM_SOUND = 5007
+
+	// قفل کردن سایز پنجره اصلی برای جلوگیری از بهم ریختن المان‌ها
+	WS_FIXED_WINDOW = 0x00CA0000 // WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX
+
+	// پیام‌های اختصاصی برای آپدیت گرافیک با امنیت ۱۰۰ درصد
+	WM_SHOW_ALERT    = 0x0401
+	WM_APP_UPDATE_UI = 0x8001
 )

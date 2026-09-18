@@ -88,6 +88,9 @@ var (
 	procMoveToEx  = gdi32.NewProc("MoveToEx")
 	procLineTo    = gdi32.NewProc("LineTo")
 	procPolygon   = gdi32.NewProc("Polygon")
+
+	winmm       = syscall.NewLazyDLL("winmm.dll")
+	procMciSend = winmm.NewProc("mciSendStringW")
 )
 
 // شناسه‌های اختصاصی هسته ویندوز برای صدا

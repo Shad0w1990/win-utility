@@ -15,6 +15,62 @@ import (
 	"unsafe"
 )
 
+var (
+	winmmDLL          = syscall.NewLazyDLL("winmm.dll")
+	procMciSendString = winmmDLL.NewProc("mciSendStringW")
+)
+
+func getAvailableAudioFiles() []string {
+	files := []string{"default"}
+	dir := filepath.Join("assets", "audio")
+	entries, err := os.ReadDir(dir)
+	if err == nil {
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(strings.ToLower(e.Name()), ".mp3") {
+				files = append(files, e.Name())
+			}
+		}
+	}
+	return files
+}
+
+func playCustomSoundType(soundType string) {
+	if !uiSoundEnabled {
+		return
+	}
+	targetFile := clickSoundFile
+	if soundType == "alarm" {
+		targetFile = alarmSoundFile
+	}
+
+	if targetFile == "default" || targetFile == "" {
+		if soundType == "click" {
+			go procBeep.Call(uintptr(700), uintptr(30))
+		} else {
+			go procBeep.Call(uintptr(400), uintptr(250))
+		}
+		return
+	}
+
+	go func() {
+		filePath := filepath.Join("assets", "audio", targetFile)
+		absPath, err := filepath.Abs(filePath)
+		if err != nil {
+			return
+		}
+
+		alias := "snd_" + soundType
+		cmdClose, _ := syscall.UTF16PtrFromString("close " + alias)
+		procMciSendString.Call(uintptr(unsafe.Pointer(cmdClose)), 0, 0, 0)
+
+		cmdOpen, _ := syscall.UTF16PtrFromString(fmt.Sprintf("open \"%s\" alias %s", absPath, alias))
+		procMciSendString.Call(uintptr(unsafe.Pointer(cmdOpen)), 0, 0, 0)
+
+		cmdPlay, _ := syscall.UTF16PtrFromString("play " + alias)
+		procMciSendString.Call(uintptr(unsafe.Pointer(cmdPlay)), 0, 0, 0)
+	}()
+}
+
 func checkStartup() {
 	out, _ := exec.Command("cmd", "/c", `reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v SysGuard`).Output()
 	if strings.Contains(string(out), "SysGuard") {
@@ -35,9 +91,7 @@ func toggleStartup() {
 }
 
 func playUIClick() {
-	if uiSoundEnabled {
-		go procBeep.Call(uintptr(700), uintptr(30))
-	}
+	playCustomSoundType("click")
 }
 
 func blendColor(c1, c2 uint32, t float64) uint32 {
@@ -111,13 +165,20 @@ func updateTabButtonsVisibility() {
 	if showS {
 		swS = SW_SHOW
 	}
+
 	procShowWindow.Call(uintptr(hwndBtnLang), uintptr(swS))
 	procShowWindow.Call(uintptr(hwndBtnSoundToggle), uintptr(swS))
 	procShowWindow.Call(uintptr(hwndBtnStartup), uintptr(swS))
+
+	procShowWindow.Call(uintptr(hwndBtnClickSound), uintptr(swS))
+	procShowWindow.Call(uintptr(hwndBtnAlarmSound), uintptr(swS))
 	procShowWindow.Call(uintptr(hwndBtnCopyIran), uintptr(swS))
 	procShowWindow.Call(uintptr(hwndBtnCopyTron), uintptr(swS))
 	procShowWindow.Call(uintptr(hwndBtnCopyTon), uintptr(swS))
 
+	procShowWindow.Call(uintptr(hwndChkWidget), uintptr(swS))
+
+	// این بخش که پاک شده بود را برگرداندم تا رنگ تب‌ها (منوی سمت چپ) ۱۰۰ درصد آپدیت شود
 	if hwndTabDash != 0 {
 		procInvalidateRect.Call(uintptr(hwndTabDash), 0, 1)
 	}
@@ -143,6 +204,25 @@ func updateTabButtonsVisibility() {
 
 func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 	switch uint32(msg) {
+	case WM_SHOW_ALERT:
+		params := (*AlertParams)(unsafe.Pointer(lParam))
+		RenderModernAlert(hwnd, params.Message, params.Title, params.Color)
+		return 0
+
+	case WM_APP_UPDATE_UI:
+		action := int(wParam)
+		if action == 1 {
+			chkText, _ := syscall.UTF16PtrFromString(T(" Enable RGB Desktop Overlay", " فعال‌سازی ویجت دسکتاپ (RGB)"))
+			procSetWindowText.Call(uintptr(hwndChkWidget), uintptr(unsafe.Pointer(chkText)))
+			updateTabButtonsVisibility()
+		} else if action == 2 {
+			procInvalidateRect.Call(uintptr(hwndMain), 0, 0)
+		} else if action == 3 {
+			hBtn := syscall.Handle(lParam)
+			procInvalidateRect.Call(uintptr(hBtn), 0, 0)
+		}
+		return 0
+
 	case WM_ERASEBKGND:
 		return 1
 	case WM_CREATE:
@@ -171,11 +251,21 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 		}
 
 		if isWidgetActive {
-			procInvalidateRect.Call(uintptr(hwndWidget), 0, 1)
+			procInvalidateRect.Call(uintptr(hwndWidget), 0, 0)
 		}
 
 		if (isAsus && currentPage == 3) || (!isAsus && currentPage == 2) {
-			procInvalidateRect.Call(uintptr(hwnd), 0, 1)
+			r := RECT{Left: 200, Top: 40, Right: 950, Bottom: 780}
+			procInvalidateRect.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&r)), 0)
+		}
+
+		if diskUsageVal > 90.0 {
+			if !alarmPlayed {
+				playCustomSoundType("alarm")
+				alarmPlayed = true
+			}
+		} else {
+			alarmPlayed = false
 		}
 
 		activeBtn := atomic.LoadUint32(&loadingButtonID)
@@ -204,7 +294,7 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 				hBtn = hwndBtnLang
 			}
 			if hBtn != 0 {
-				procInvalidateRect.Call(uintptr(hBtn), 0, 1)
+				procInvalidateRect.Call(uintptr(hBtn), 0, 0)
 			}
 		}
 
@@ -272,11 +362,12 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 			return 0
 		}
 
-	case WM_CTLCOLORSTATIC:
+	case WM_CTLCOLORSTATIC, 0x0133, 0x0134:
 		hdc := syscall.Handle(wParam)
 		procSetBkMode.Call(uintptr(hdc), uintptr(TRANSPARENT))
-		procSetTextColor.Call(uintptr(hdc), uintptr(RGB(180, 200, 220)))
-		return uintptr(hBrushBg)
+		procSetTextColor.Call(uintptr(hdc), uintptr(RGB(220, 235, 255)))
+		brushPtr, _, _ := procCreateSolidBrush.Call(uintptr(RGB(16, 22, 35)))
+		return brushPtr
 
 	case WM_DRAWITEM:
 		dis := (*DRAWITEMSTRUCT)(unsafe.Pointer(lParam))
@@ -379,7 +470,6 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 				return 1
 			}
 
-			// استایل دکمه‌های کپی دونیت
 			isDonateBtn := dis.CtlID == IDC_COPY_IRAN || dis.CtlID == IDC_COPY_TRON || dis.CtlID == IDC_COPY_TON
 			if isDonateBtn {
 				isDown := (dis.ItemState & ODS_SELECTED) != 0
@@ -428,37 +518,47 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 			cmdID := int(wParam & 0xFFFF)
 			switch cmdID {
 			case IDC_TAB_DASH:
-				currentPage = 0
-				updateTabButtonsVisibility()
+				if currentPage != 0 {
+					currentPage = 0
+					updateTabButtonsVisibility()
+				}
 			case IDC_TAB_NET:
-				currentPage = 1
-				updateTabButtonsVisibility()
+				if currentPage != 1 {
+					currentPage = 1
+					updateTabButtonsVisibility()
+				}
 			case IDC_TAB_POWER:
-				if isAsus {
+				if isAsus && currentPage != 2 {
 					currentPage = 2
 					updateTabButtonsVisibility()
 				}
 			case IDC_TAB_GAMEPAD:
+				target := 2
 				if isAsus {
-					currentPage = 3
-				} else {
-					currentPage = 2
+					target = 3
 				}
-				updateTabButtonsVisibility()
+				if currentPage != target {
+					currentPage = target
+					updateTabButtonsVisibility()
+				}
 			case IDC_TAB_TOOLS:
+				target := 3
 				if isAsus {
-					currentPage = 4
-				} else {
-					currentPage = 3
+					target = 4
 				}
-				updateTabButtonsVisibility()
+				if currentPage != target {
+					currentPage = target
+					updateTabButtonsVisibility()
+				}
 			case IDC_TAB_SETTINGS:
+				target := 4
 				if isAsus {
-					currentPage = 5
-				} else {
-					currentPage = 4
+					target = 5
 				}
-				updateTabButtonsVisibility()
+				if currentPage != target {
+					currentPage = target
+					updateTabButtonsVisibility()
+				}
 
 			case IDC_CHK_WIDGET:
 				state, _, _ := procSendMessage.Call(uintptr(hwndChkWidget), BM_GETCHECK, 0, 0)
@@ -483,9 +583,7 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 						}
 						saveSettings()
 						atomic.StoreUint32(&loadingButtonID, 0)
-						chkText, _ := syscall.UTF16PtrFromString(T(" Enable RGB Desktop Overlay", " فعال‌سازی ویجت دسکتاپ (RGB)"))
-						procSetWindowText.Call(uintptr(hwndChkWidget), uintptr(unsafe.Pointer(chkText)))
-						updateTabButtonsVisibility()
+						user32.NewProc("PostMessageW").Call(uintptr(hwndMain), WM_APP_UPDATE_UI, 1, 0)
 					}()
 				}
 
@@ -497,16 +595,45 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 				toggleStartup()
 				procInvalidateRect.Call(uintptr(hwndBtnStartup), 0, 1)
 
-			// عملیات کپی دونیت‌ها با شماره کارت جدید شما
+			case IDC_SET_CLICK_SOUND:
+				files := getAvailableAudioFiles()
+				currentIndex := 0
+				for i, f := range files {
+					if f == clickSoundFile {
+						currentIndex = i
+						break
+					}
+				}
+				currentIndex = (currentIndex + 1) % len(files)
+				clickSoundFile = files[currentIndex]
+				saveSettings()
+				procInvalidateRect.Call(uintptr(hwndBtnClickSound), 0, 1)
+				playCustomSoundType("click")
+
+			case IDC_SET_ALARM_SOUND:
+				files := getAvailableAudioFiles()
+				currentIndex := 0
+				for i, f := range files {
+					if f == alarmSoundFile {
+						currentIndex = i
+						break
+					}
+				}
+				currentIndex = (currentIndex + 1) % len(files)
+				alarmSoundFile = files[currentIndex]
+				saveSettings()
+				procInvalidateRect.Call(uintptr(hwndBtnAlarmSound), 0, 1)
+				playCustomSoundType("alarm")
+
 			case IDC_COPY_IRAN:
 				copyToClipboardNative("شماره کارت: 6104-3377-6761-3068\nبه نام: احسان خرسند")
-				ShowMessageBox(hwndMain, T("Iranian card number copied to clipboard.", "شماره کارت ریالی با موفقیت کپی شد."), "Copied", 0x00000040)
+				ShowModernAlert(hwndMain, T("Iranian card number copied to clipboard.", "شماره کارت ریالی با موفقیت کپی شد."), T("Copied", "کپی شد"), RGB(0, 255, 150))
 			case IDC_COPY_TRON:
 				copyToClipboardNative("TCzZtuWEwZfcWa3wKHGYjwHZrSPL6DW7C")
-				ShowMessageBox(hwndMain, T("USDT (TRC20) address copied to clipboard.", "آدرس تتر شبکه Tron (TRC20) کپی شد."), "Copied", 0x00000040)
+				ShowModernAlert(hwndMain, T("USDT (TRC20) address copied to clipboard.", "آدرس تتر شبکه Tron (TRC20) کپی شد."), T("Copied", "کپی شد"), RGB(255, 140, 50))
 			case IDC_COPY_TON:
 				copyToClipboardNative("UQB-5yLspFNXmvEXR4DP955To-D3hn2b0Rc3p7BNCqfzZAtF")
-				ShowMessageBox(hwndMain, T("TON address copied to clipboard.", "آدرس شبکه TON کپی شد."), "Copied", 0x00000040)
+				ShowModernAlert(hwndMain, T("TON address copied to clipboard.", "آدرس شبکه TON کپی شد."), T("Copied", "کپی شد"), RGB(0, 210, 255))
 
 			case IDC_TOOL_PWR_SAVE:
 				if strings.EqualFold(sysPowerPlanGUID, "a1841308-3541-4fab-bc81-f71556f20b4a") {
@@ -525,7 +652,7 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 						time.Sleep(600 * time.Millisecond)
 						updatePowerPlanStatus()
 						atomic.StoreUint32(&loadingButtonID, 0)
-						procInvalidateRect.Call(uintptr(hwndMain), 0, 1)
+						user32.NewProc("PostMessageW").Call(uintptr(hwndMain), WM_APP_UPDATE_UI, 2, 0)
 					}()
 				}
 			case IDC_TOOL_PWR_BAL:
@@ -545,7 +672,7 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 						time.Sleep(600 * time.Millisecond)
 						updatePowerPlanStatus()
 						atomic.StoreUint32(&loadingButtonID, 0)
-						procInvalidateRect.Call(uintptr(hwndMain), 0, 1)
+						user32.NewProc("PostMessageW").Call(uintptr(hwndMain), WM_APP_UPDATE_UI, 2, 0)
 					}()
 				}
 			case IDC_TOOL_PWR_HIGH:
@@ -565,7 +692,7 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 						time.Sleep(600 * time.Millisecond)
 						updatePowerPlanStatus()
 						atomic.StoreUint32(&loadingButtonID, 0)
-						procInvalidateRect.Call(uintptr(hwndMain), 0, 1)
+						user32.NewProc("PostMessageW").Call(uintptr(hwndMain), WM_APP_UPDATE_UI, 2, 0)
 					}()
 				}
 
@@ -604,10 +731,10 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 				if atomic.LoadUint32(&loadingButtonID) == 0 {
 					atomic.StoreUint32(&loadingButtonID, IDC_BTN_SOUND)
 					go func() {
-						go procBeep.Call(uintptr(400), uintptr(250))
+						playCustomSoundType("click")
 						time.Sleep(800 * time.Millisecond)
 						atomic.StoreUint32(&loadingButtonID, 0)
-						procInvalidateRect.Call(uintptr(hwndBtnSound), 0, 1)
+						user32.NewProc("PostMessageW").Call(uintptr(hwndMain), WM_APP_UPDATE_UI, 3, uintptr(hwndBtnSound))
 					}()
 				}
 			case IDC_BTN_DIAG:
@@ -622,8 +749,8 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 						cmdDNS.Run()
 						time.Sleep(1 * time.Second)
 						atomic.StoreUint32(&loadingButtonID, 0)
-						procInvalidateRect.Call(uintptr(hwndBtnDiag), 0, 1)
-						ShowMessageBox(hwndMain, T("System Time synced and DNS Cache flushed successfully.", "ساعت ویندوز و کش اینترنت با موفقیت همگام‌سازی شدند."), T("Force Sync", "همگام‌سازی"), 0x00000040)
+						user32.NewProc("PostMessageW").Call(uintptr(hwndMain), WM_APP_UPDATE_UI, 3, uintptr(hwndBtnDiag))
+						ShowModernAlert(hwndMain, T("System Time synced and DNS Cache flushed successfully.", "ساعت ویندوز و کش اینترنت با موفقیت همگام‌سازی شدند."), T("Force Sync", "همگام‌سازی"), RGB(0, 200, 255))
 					}()
 				}
 			case IDC_BTN_ANALYZE:
@@ -689,7 +816,7 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 						gReason := fmt.Sprintf(T("Avg Load: %.1f%% - ", "فشار پردازشی: %.1f%% - "), gAvg)
 						if gAvg > 90 {
 							gScore += 25
-							gReason += T("High load. Upgrade if gaming lags.", "فشار بالا. اگر لگ دارید گرافیک را ارتقا دهید.")
+							gReason += T("High load. Upgrade if gaming lags.", "بحرانی: فشار بالا روی گرافیک.")
 						} else {
 							gReason += T("Performance is optimal.", "کارت گرافیک در وضعیت ایده‌آل است.")
 						}
@@ -699,10 +826,10 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 						dReason := fmt.Sprintf(T("Space Used: %.1f%% - ", "فضای پر شده: %.1f%% - "), dAvg)
 						if dAvg > 90 {
 							dScore += 45
-							dReason += T("CRITICAL: Drive almost full!", "بحرانی: درایو ویندوز در حال پر شدن است.")
+							dReason += T("CRITICAL: Drive capacity is almost full! Please upgrade storage.", "بحرانی: ظرفیت درایو ویندوز در حال پر شدن است! ارتقاء حافظه پیشنهاد می‌شود.")
 						} else if strings.Contains(strings.ToUpper(diskMediaType), "HDD") {
 							dScore += 60
-							dReason += T("CRITICAL: Upgrade to SSD.", "بحرانی: ویندوز روی هارد دیسک است. خرید SSD ضروری است.")
+							dReason += T("CRITICAL: Upgrade to SSD.", "بحرانی: ویندوز روی هارد دیسک است.")
 						} else {
 							dReason += T("Storage health is good.", "وضعیت درایوها عالی است.")
 						}
@@ -723,8 +850,8 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 						}
 
 						atomic.StoreUint32(&loadingButtonID, 0)
-						procInvalidateRect.Call(uintptr(hwndBtnAnalyze), 0, 1)
-						ShowMessageBox(hwndMain, report, T("Hardware Analysis", "آنالیز سخت‌افزار"), 0x00000040)
+						user32.NewProc("PostMessageW").Call(uintptr(hwndMain), WM_APP_UPDATE_UI, 3, uintptr(hwndBtnAnalyze))
+						ShowModernAlert(hwndMain, report, T("Hardware Analysis", "آنالیز سخت‌افزار"), RGB(0, 255, 150))
 					}()
 				}
 			case IDC_BTN_CLEAN:
@@ -741,8 +868,8 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 							}
 						}
 						atomic.StoreUint32(&loadingButtonID, 0)
-						procInvalidateRect.Call(uintptr(hwndBtnClean), 0, 1)
-						ShowMessageBox(hwndMain, fmt.Sprintf(T("Cleaned %d junk files/folders.", "%d فایل موقت و بی‌مصرف با موفقیت پاک شد."), deleted), T("Optimizer", "بهینه‌ساز سیستم"), 0x00000040)
+						user32.NewProc("PostMessageW").Call(uintptr(hwndMain), WM_APP_UPDATE_UI, 3, uintptr(hwndBtnClean))
+						ShowModernAlert(hwndMain, fmt.Sprintf(T("Cleaned %d junk files/folders.", "%d فایل موقت و بی‌مصرف با موفقیت پاک شد."), deleted), T("Optimizer", "بهینه‌ساز سیستم"), RGB(255, 140, 50))
 					}()
 				}
 			}
@@ -1113,7 +1240,7 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 				procSelectObject.Call(hdc, uintptr(hFontNormal))
 
 				panelColor := RGB(16, 22, 35)
-				drawRect(hdc, 210, 80, int(rect.Right)-30, 310, 12, panelColor)
+				drawRect(hdc, 210, 80, int(rect.Right)-30, 440, 12, panelColor)
 
 				setTextColor(hdc, RGB(220, 235, 255))
 				cRectS := RECT{Left: 500, Top: 115, Right: rect.Right - 40, Bottom: 150}
@@ -1125,35 +1252,38 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 				cRectS.Top = 255
 				DrawTextSafe(hdc, T("Run SysGuard automatically when Windows starts.", "اجرای خودکار برنامه هنگام روشن شدن ویندوز."), &cRectS, DT_LEFT|DT_TOP)
 
+				cRectS.Top = 325
+				DrawTextSafe(hdc, T("Click to cycle UI Sound", "برای تغییر صدای کلیک روی دکمه ضربه بزنید"), &cRectS, DT_LEFT|DT_TOP)
+
+				cRectS.Top = 380
+				DrawTextSafe(hdc, T("Click to cycle Alarm Sound", "برای تغییر صدای آلارم روی دکمه ضربه بزنید"), &cRectS, DT_LEFT|DT_TOP)
+
 				setTextColor(hdc, RGB(0, 210, 255))
-				cRectD := RECT{Left: 210, Top: 340, Right: rect.Right - 30, Bottom: 370}
+				cRectD := RECT{Left: 210, Top: 460, Right: rect.Right - 30, Bottom: 490}
 				DrawTextSafe(hdc, T("☕ SUPPORT THE DEVELOPER", "☕ حمایت از توسعه‌دهنده (Donate)"), &cRectD, DT_LEFT|DT_TOP)
 
-				// پنل شبکه شتاب (ریالی)
-				drawRect(hdc, 210, 380, int(rect.Right)-30, 445, 10, panelColor)
+				drawRect(hdc, 210, 500, int(rect.Right)-30, 565, 10, panelColor)
 				setTextColor(hdc, RGB(0, 255, 150))
-				rIrTitle := RECT{Left: 230, Top: 393, Right: 500, Bottom: 415}
+				rIrTitle := RECT{Left: 230, Top: 513, Right: 500, Bottom: 535}
 				DrawTextSafe(hdc, T("💳 Iranian Users (Shetab)", "💳 کاربران داخل ایران (شبکه شتاب)"), &rIrTitle, DT_LEFT|DT_TOP)
 				setTextColor(hdc, RGB(220, 235, 255))
-				rIrNum := RECT{Left: 230, Top: 416, Right: 600, Bottom: 438}
+				rIrNum := RECT{Left: 230, Top: 536, Right: 600, Bottom: 558}
 				DrawTextSafe(hdc, "6104-3377-6761-3068  |  Ehsan Khorsand", &rIrNum, DT_LEFT|DT_TOP)
 
-				// پنل تتر Tron (TRC20)
-				drawRect(hdc, 210, 455, int(rect.Right)-30, 520, 10, panelColor)
+				drawRect(hdc, 210, 575, int(rect.Right)-30, 640, 10, panelColor)
 				setTextColor(hdc, RGB(255, 140, 50))
-				rTrTitle := RECT{Left: 230, Top: 468, Right: 500, Bottom: 490}
+				rTrTitle := RECT{Left: 230, Top: 588, Right: 500, Bottom: 610}
 				DrawTextSafe(hdc, T("🌐 USDT - Tron (TRC20)", "🌐 تتر - شبکه ترون (TRC20)"), &rTrTitle, DT_LEFT|DT_TOP)
 				setTextColor(hdc, RGB(220, 235, 255))
-				rTrNum := RECT{Left: 230, Top: 491, Right: 600, Bottom: 513}
+				rTrNum := RECT{Left: 230, Top: 611, Right: 600, Bottom: 633}
 				DrawTextSafe(hdc, "TCzZtuWEwZfcWa3wKHGYjwHZrSPL6DW7C", &rTrNum, DT_LEFT|DT_TOP)
 
-				// پنل شبکه TON
-				drawRect(hdc, 210, 530, int(rect.Right)-30, 595, 10, panelColor)
+				drawRect(hdc, 210, 650, int(rect.Right)-30, 715, 10, panelColor)
 				setTextColor(hdc, RGB(0, 210, 255))
-				rTonTitle := RECT{Left: 230, Top: 543, Right: 500, Bottom: 565}
+				rTonTitle := RECT{Left: 230, Top: 663, Right: 500, Bottom: 685}
 				DrawTextSafe(hdc, T("💎 TON Network", "💎 شبکه تون (TON)"), &rTonTitle, DT_LEFT|DT_TOP)
 				setTextColor(hdc, RGB(220, 235, 255))
-				rTonNum := RECT{Left: 230, Top: 566, Right: 600, Bottom: 588}
+				rTonNum := RECT{Left: 230, Top: 686, Right: 600, Bottom: 708}
 				DrawTextSafe(hdc, "UQB-5yLspFNXmvEXR4DP955To-D3hn2b0Rc3p7BNCqfzZAtF", &rTonNum, DT_LEFT|DT_TOP)
 			}
 
@@ -1169,12 +1299,6 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 		return ret
 	}
 	return 0
-}
-
-func ShowMessageBox(hwnd syscall.Handle, msg, title string, flags uint32) {
-	tPtr, _ := syscall.UTF16PtrFromString(msg)
-	cPtr, _ := syscall.UTF16PtrFromString(title)
-	procMessageBox.Call(uintptr(hwnd), uintptr(unsafe.Pointer(tPtr)), uintptr(unsafe.Pointer(cPtr)), uintptr(flags))
 }
 
 func createAndShowGUI() {
@@ -1198,8 +1322,8 @@ func createAndShowGUI() {
 	procRegisterClassEx.Call(uintptr(unsafe.Pointer(&wc)))
 
 	hwndPtr, _, _ := procCreateWindow.Call(0, uintptr(unsafe.Pointer(className)), uintptr(unsafe.Pointer(windowName)),
-		uintptr(WS_OVERLAPPEDWINDOW|WS_VISIBLE|WS_CLIPCHILDREN), uintptr(CW_USEDEFAULT), uintptr(CW_USEDEFAULT),
-		950, 640, 0, 0, inst, 0)
+		uintptr(WS_FIXED_WINDOW|WS_VISIBLE|WS_CLIPCHILDREN), uintptr(CW_USEDEFAULT), uintptr(CW_USEDEFAULT),
+		950, 780, 0, 0, inst, 0)
 
 	hwndMain = syscall.Handle(hwndPtr)
 	setWindowIcon(hwndMain, "icon.ico")
@@ -1235,10 +1359,12 @@ func createAndShowGUI() {
 	hwndBtnSoundToggle = createControl(hwndMain, IDC_SET_SOUND, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 230, 170, 250, 50)
 	hwndBtnStartup = createControl(hwndMain, IDC_SET_STARTUP, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 230, 240, 250, 50)
 
-	// ۳ دکمه کپی برای بخش حمایت مالی (ریالی، ترون، تون)
-	hwndBtnCopyIran = createControl(hwndMain, IDC_COPY_IRAN, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 630, 385, 140, 35)
-	hwndBtnCopyTron = createControl(hwndMain, IDC_COPY_TRON, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 630, 460, 140, 35)
-	hwndBtnCopyTon = createControl(hwndMain, IDC_COPY_TON, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 630, 535, 140, 35)
+	hwndBtnClickSound = createControl(hwndMain, IDC_SET_CLICK_SOUND, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 230, 310, 250, 50)
+	hwndBtnAlarmSound = createControl(hwndMain, IDC_SET_ALARM_SOUND, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 230, 365, 250, 50)
+
+	hwndBtnCopyIran = createControl(hwndMain, IDC_COPY_IRAN, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 630, 520, 140, 35)
+	hwndBtnCopyTron = createControl(hwndMain, IDC_COPY_TRON, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 630, 595, 140, 35)
+	hwndBtnCopyTon = createControl(hwndMain, IDC_COPY_TON, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 630, 670, 140, 35)
 
 	hwndBtnPwrSave = createControl(hwndMain, IDC_TOOL_PWR_SAVE, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 520, 165, 80, 35)
 	hwndBtnPwrBal = createControl(hwndMain, IDC_TOOL_PWR_BAL, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 610, 165, 80, 35)
@@ -1250,7 +1376,7 @@ func createAndShowGUI() {
 	hwndBtnAnalyze = createControl(hwndMain, IDC_BTN_ANALYZE, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 230, 490, 265, 70)
 	hwndBtnEventLog = createControl(hwndMain, IDC_BTN_EVENT_LOG, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 510, 490, 265, 70)
 
-	hwndChkWidget = createControl(hwndMain, IDC_CHK_WIDGET, "BUTTON", " Enable RGB Desktop Overlay", WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX, 210, 595, 230, 30)
+	hwndChkWidget = createControl(hwndMain, IDC_CHK_WIDGET, "BUTTON", " Enable RGB Desktop Overlay", WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX, 210, 735, 230, 30)
 	hwndBtnSysInfo = createControl(hwndMain, IDC_BTN_SYSINFO, "BUTTON", "", WS_CHILD|WS_VISIBLE|BS_OWNERDRAW, 740, 40, 170, 35)
 
 	procSendMessage.Call(uintptr(hwndChkWidget), WM_SETFONT, uintptr(hFontNormal), 1)
@@ -1317,9 +1443,9 @@ func drawCustomButton(dis *DRAWITEMSTRUCT) {
 		if isDown {
 			bgColor, txtColor = RGB(16, 28, 50), RGB(0, 255, 200)
 		} else if isActiveTab {
-			bgColor, txtColor = RGB(16, 22, 35), RGB(0, 230, 255)
+			bgColor, txtColor = RGB(16, 22, 35), RGB(0, 210, 255)
 		} else {
-			bgColor, txtColor = RGB(5, 7, 12), RGB(100, 115, 140)
+			bgColor, txtColor = RGB(5, 7, 12), RGB(130, 140, 150)
 		}
 
 		switch dis.CtlID {
@@ -1338,9 +1464,13 @@ func drawCustomButton(dis *DRAWITEMSTRUCT) {
 		}
 
 		drawRect(uintptr(dis.Hdc), int(dis.RcItem.Left), int(dis.RcItem.Top), int(dis.RcItem.Right), int(dis.RcItem.Bottom), 0, bgColor)
+
 		if isActiveTab {
 			drawRect(uintptr(dis.Hdc), int(dis.RcItem.Left), int(dis.RcItem.Top), int(dis.RcItem.Left)+5, int(dis.RcItem.Bottom), 0, RGB(0, 210, 255))
+		} else {
+			drawRect(uintptr(dis.Hdc), int(dis.RcItem.Left), int(dis.RcItem.Top), int(dis.RcItem.Left)+5, int(dis.RcItem.Bottom), 0, bgColor)
 		}
+
 		procSelectObject.Call(uintptr(dis.Hdc), uintptr(hFontNormal))
 		procSetBkMode.Call(uintptr(dis.Hdc), uintptr(TRANSPARENT))
 		procSetTextColor.Call(uintptr(dis.Hdc), uintptr(txtColor))
@@ -1457,6 +1587,13 @@ func drawCustomButton(dis *DRAWITEMSTRUCT) {
 				text = T("🚀 Run on Startup: OFF", "🚀 اجرای خودکار با ویندوز: خاموش")
 				borderColor = RGB(255, 80, 100)
 			}
+
+		case IDC_SET_CLICK_SOUND:
+			text = fmt.Sprintf("🎵 Click: %s", clickSoundFile)
+			borderColor = RGB(200, 100, 255)
+		case IDC_SET_ALARM_SOUND:
+			text = fmt.Sprintf("🚨 Alarm: %s", alarmSoundFile)
+			borderColor = RGB(255, 140, 50)
 		}
 
 		if currentLoading == dis.CtlID {

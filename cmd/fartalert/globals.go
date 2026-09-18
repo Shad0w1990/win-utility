@@ -8,20 +8,26 @@ var (
 	hwndTabDash, hwndTabNet, hwndTabPower, hwndTabGamepad syscall.Handle
 	hwndTabTools, hwndTabSettings                         syscall.Handle
 
-	// هندل دکمه‌های نگهداری سیستم
 	hwndBtnSound, hwndBtnDiag, hwndBtnAnalyze, hwndBtnClean syscall.Handle
 	hwndBtnEventLog                                         syscall.Handle
-
-	hwndBtnSysInfo syscall.Handle
+	hwndBtnSysInfo                                          syscall.Handle
 
 	hwndBtnSilent, hwndBtnBalanced, hwndBtnTurbo syscall.Handle
 	hwndBtnEco, hwndBtnStandard, hwndBtnUltra    syscall.Handle
 
 	hwndBtnLang, hwndBtnSoundToggle, hwndBtnStartup syscall.Handle
+	hwndBtnClickSound, hwndBtnAlarmSound            syscall.Handle
 
-	hwndBtnPwrSave, hwndBtnPwrBal, hwndBtnPwrHigh syscall.Handle
+	hwndBtnPwrSave, hwndBtnPwrBal, hwndBtnPwrHigh    syscall.Handle
+	hwndBtnCopyIran, hwndBtnCopyTron, hwndBtnCopyTon syscall.Handle
 
-	hFontNormal, hFontTitle, hFontWidget, hFontSmall syscall.Handle // فونت کوچک برای توضیحات دکمه‌ها
+	clickSoundFile = "default"
+	alarmSoundFile = "default"
+
+	// متغیر جلوگیری از باگ هنگ سیستم و پخش مداوم آلارم
+	alarmPlayed = false
+
+	hFontNormal, hFontTitle, hFontWidget, hFontSmall syscall.Handle
 	hBrushBg                                         syscall.Handle
 	isWidgetActive                                   = false
 
@@ -78,8 +84,6 @@ var (
 	sysIPAddress   = "IPv4: Detecting..."
 
 	telemetryHistory []TelemetryData
-
-	hwndBtnCopyIran, hwndBtnCopyTron, hwndBtnCopyTon syscall.Handle
 )
 
 type TelemetryData struct {
@@ -88,6 +92,12 @@ type TelemetryData struct {
 	RAM       float64 `json:"ram"`
 	GPU       float64 `json:"gpu"`
 	Disk      float64 `json:"disk"`
+}
+
+type AlertParams struct {
+	Message string
+	Title   string
+	Color   uint32
 }
 
 func T(en, fa string) string {
