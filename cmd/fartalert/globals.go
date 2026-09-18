@@ -3,28 +3,38 @@ package main
 import "syscall"
 
 var (
-	currentPage                                             = 0
-	hwndMain, hwndWidget, hwndChkWidget                     syscall.Handle
-	hwndTabDash, hwndTabNet, hwndTabPower, hwndTabGamepad   syscall.Handle
-	hwndTabTools, hwndTabSettings                           syscall.Handle
+	currentPage                                           = 0
+	hwndMain, hwndWidget, hwndChkWidget                   syscall.Handle
+	hwndTabDash, hwndTabNet, hwndTabPower, hwndTabGamepad syscall.Handle
+	hwndTabTools, hwndTabSettings                         syscall.Handle
+
+	// هندل دکمه‌های نگهداری سیستم
 	hwndBtnSound, hwndBtnDiag, hwndBtnAnalyze, hwndBtnClean syscall.Handle
-	hwndBtnSysInfo                                          syscall.Handle
+	hwndBtnEventLog                                         syscall.Handle
+
+	hwndBtnSysInfo syscall.Handle
 
 	hwndBtnSilent, hwndBtnBalanced, hwndBtnTurbo syscall.Handle
 	hwndBtnEco, hwndBtnStandard, hwndBtnUltra    syscall.Handle
 
-	// هندل دکمه‌های صفحه تنظیمات
 	hwndBtnLang, hwndBtnSoundToggle, hwndBtnStartup syscall.Handle
 
-	hFontNormal, hFontTitle, hFontWidget syscall.Handle
-	hBrushBg                             syscall.Handle
-	isWidgetActive                       = false
-	isAsusLaptop                         = false
+	hwndBtnPwrSave, hwndBtnPwrBal, hwndBtnPwrHigh syscall.Handle
 
-	// متغیرهای بخش تنظیمات
-	uiLanguage     = "EN"  // زبان پیش‌فرض
-	uiSoundEnabled = true  // صدای کلیک‌ها
-	runAtStartup   = false // وضعیت اجرای خودکار
+	hFontNormal, hFontTitle, hFontWidget, hFontSmall syscall.Handle // فونت کوچک برای توضیحات دکمه‌ها
+	hBrushBg                                         syscall.Handle
+	isWidgetActive                                   = false
+
+	isAsus    = false
+	isLaptop  = false
+	sysUptime = "0h 0m"
+
+	isDraggingBrightness = false
+	isDraggingVolume     = false
+
+	uiLanguage     = "EN"
+	uiSoundEnabled = true
+	runAtStartup   = false
 
 	currentPowerMode = "Balanced"
 	currentGpuMode   = "Standard"
@@ -59,8 +69,10 @@ var (
 
 	sysBatteryPercent = "Scanning..."
 	sysPowerPlan      = "Scanning..."
-	sysBrightness     = "Scanning..."
-	sysVolume         = "OS Managed"
+	sysPowerPlanGUID  = ""
+
+	sysBrightnessVal = 50
+	sysVolumeVal     = 50
 
 	sysGamepadName = "Searching..."
 	sysIPAddress   = "IPv4: Detecting..."
@@ -76,7 +88,6 @@ type TelemetryData struct {
 	Disk      float64 `json:"disk"`
 }
 
-// تابع جادویی ترجمه: اگر زبان فارسی باشد متن دوم را برمی‌گرداند
 func T(en, fa string) string {
 	if uiLanguage == "FA" {
 		return fa

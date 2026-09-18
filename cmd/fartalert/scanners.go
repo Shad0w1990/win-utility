@@ -8,7 +8,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -65,17 +67,14 @@ func fetchStaticHardwareInfo() {
 	}
 
 	sysModelName = strings.ReplaceAll(sysModelName, "ASUSTeK COMPUTER INC.", "ASUS")
+	isAsus = strings.Contains(strings.ToUpper(sysModelName), "ASUS")
 
 	var status struct {
 		ACLineStatus, BatteryFlag, BatteryLifePercent, Reserved1 byte
 		BatteryLifeTime, BatteryFullLifeTime                     uint32
 	}
 	ret, _, _ := procGetSystemPowerStatus.Call(uintptr(unsafe.Pointer(&status)))
-	hasBattery := (ret != 0 && status.BatteryFlag != 128)
-
-	if strings.Contains(strings.ToUpper(sysModelName), "ASUS") || hasBattery {
-		isAsusLaptop = true
-	}
+	isLaptop = (ret != 0 && status.BatteryFlag != 128)
 
 	disk := getWmiInfo("(Get-PhysicalDisk | Select-Object -First 1).MediaType")
 	if disk != "" {
@@ -100,20 +99,17 @@ func getGPUStatsExt() (string, string, float64, float64) {
 	return "NVIDIA GeForce GPU", "120 W", 0, 42
 }
 
-// ذخیره هوشمند سابقه سخت افزار تا یک ماه
 func startTelemetryLogger() {
 	appData := os.Getenv("LOCALAPPDATA")
 	dir := filepath.Join(appData, "SysGuard")
 	os.MkdirAll(dir, 0755)
 	telemetryFile := filepath.Join(dir, "telemetry_1month.json")
 
-	// لود کردن سابقه قبلی در صورت وجود
 	data, err := os.ReadFile(telemetryFile)
 	if err == nil {
 		json.Unmarshal(data, &telemetryHistory)
 	}
 
-	// پاک کردن دیتای قدیمی‌تر از 30 روز
 	thirtyDaysAgo := time.Now().Unix() - (30 * 24 * 60 * 60)
 	var filtered []TelemetryData
 	for _, t := range telemetryHistory {
@@ -123,11 +119,9 @@ func startTelemetryLogger() {
 	}
 	telemetryHistory = filtered
 
-	// ضبط سابقه هر 10 دقیقه
 	go func() {
 		for {
 			time.Sleep(10 * time.Minute)
-
 			cSum, gSum := 0.0, 0.0
 			for _, v := range cpuHistory {
 				cSum += v
@@ -135,7 +129,6 @@ func startTelemetryLogger() {
 			for _, v := range gpuHistory {
 				gSum += v
 			}
-
 			telemetryHistory = append(telemetryHistory, TelemetryData{
 				Timestamp: time.Now().Unix(),
 				CPU:       cSum / float64(len(cpuHistory)),
@@ -143,7 +136,6 @@ func startTelemetryLogger() {
 				GPU:       gSum / float64(len(gpuHistory)),
 				Disk:      diskUsageVal,
 			})
-
 			b, _ := json.Marshal(telemetryHistory)
 			os.WriteFile(telemetryFile, b, 0644)
 		}
@@ -151,8 +143,7 @@ func startTelemetryLogger() {
 }
 
 func startHardwareScanner() {
-	startTelemetryLogger() // استارت سیستم مانیتورینگ ماهانه
-
+	startTelemetryLogger()
 	go func() {
 		fetchStaticHardwareInfo()
 		getCPUUsage()
@@ -204,12 +195,13 @@ func startHardwareScanner() {
 	}()
 
 	go func() {
+		wasConnected := false
 		for {
 			var state XINPUT_STATE
 			ret, _, _ := procXInputGetState.Call(0, uintptr(unsafe.Pointer(&state)))
 
 			if ret == 0 {
-				if sysGamepadName == "Searching..." {
+				if !wasConnected {
 					query := `(Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $_.FriendlyName -match 'Xbox|Controller|Gamepad|DualSense|DualShock' -and $_.Class -ne 'AudioEndpoint' -and $_.Class -ne 'Audio' } | Select-Object -First 1).FriendlyName`
 					name := getWmiInfo(query)
 					if name != "" {
@@ -217,9 +209,11 @@ func startHardwareScanner() {
 					} else {
 						sysGamepadName = "Standard XInput Controller"
 					}
+					wasConnected = true
 				}
 			} else {
 				sysGamepadName = "Searching..."
+				wasConnected = false
 			}
 			time.Sleep(3 * time.Second)
 		}
@@ -291,19 +285,55 @@ func startGraphScanner() {
 	}()
 }
 
+// فیلتر کردن هوشمند آی‌پی‌ها برای دور زدن آداپتورهای مجازی و قطع شده
 func fetchLocalIP() string {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		return "Offline"
 	}
+	var fallbackIP string
 	for _, address := range addrs {
 		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if ipnet.IP.To4() != nil {
-				return ipnet.IP.String()
+			if ip4 := ipnet.IP.To4(); ip4 != nil {
+				ipStr := ip4.String()
+				// رد کردن آی‌پی‌های محلی و بدون اینترنت
+				if strings.HasPrefix(ipStr, "169.254.") {
+					fallbackIP = ipStr
+					continue
+				}
+				// اولویت پایین برای آداپتورهای مجازی معروف مثل VBox و VMWare
+				if strings.HasPrefix(ipStr, "192.168.56.") || strings.HasPrefix(ipStr, "192.168.137.") {
+					if fallbackIP == "" {
+						fallbackIP = ipStr
+					}
+					continue
+				}
+				return ipStr
 			}
 		}
 	}
+	if fallbackIP != "" {
+		return fallbackIP
+	}
 	return "Offline"
+}
+
+func getProcessNameNative(pid string) string {
+	pidInt, _ := strconv.Atoi(pid)
+	hProcess, _, _ := procOpenProcess.Call(0x1000, 0, uintptr(pidInt))
+	if hProcess == 0 {
+		return "Unknown"
+	}
+	defer procCloseHandle.Call(hProcess)
+
+	buf := make([]uint16, 260)
+	size := uint32(260)
+	ret, _, _ := procQueryFullProcessImageName.Call(hProcess, 0, uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&size)))
+	if ret != 0 {
+		fullPath := syscall.UTF16ToString(buf)
+		return filepath.Base(fullPath)
+	}
+	return "Unknown"
 }
 
 func startNetworkScanner() {
@@ -347,21 +377,10 @@ func startNetworkScanner() {
 				}
 				sort.Slice(ss, func(i, j int) bool { return ss[i].Value > ss[j].Value })
 
-				cmdTasklist := exec.Command("cmd", "/c", "tasklist /FO CSV /NH")
-				cmdTasklist.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-				taskOut, _ := cmdTasklist.Output()
-
 				var topApps []string
 				for i := 0; i < len(ss) && i < 3; i++ {
-					pid, count, appName := ss[i].Key, ss[i].Value, "Unknown"
-					for _, tLine := range strings.Split(string(taskOut), "\n") {
-						if strings.Contains(tLine, "\""+pid+"\"") {
-							if parts := strings.Split(tLine, "\",\""); len(parts) > 0 {
-								appName = strings.Trim(parts[0], "\"")
-								break
-							}
-						}
-					}
+					pid, count := ss[i].Key, ss[i].Value
+					appName := getProcessNameNative(pid)
 					if appName != "Unknown" {
 						topApps = append(topApps, fmt.Sprintf("• %s (%d connections)", appName, count))
 					}
@@ -377,66 +396,146 @@ func startNetworkScanner() {
 	}()
 }
 
+func getSystemVolumeNative() int {
+	procCoInitialize.Call(0)
+	defer procCoUninitialize.Call()
+
+	var enumerator uintptr
+	ret, _, _ := procCoCreateInstance.Call(
+		uintptr(unsafe.Pointer(&CLSID_MMDeviceEnumerator)),
+		0, 23,
+		uintptr(unsafe.Pointer(&IID_IMMDeviceEnumerator)),
+		uintptr(unsafe.Pointer(&enumerator)))
+	if ret != 0 || enumerator == 0 {
+		return -1
+	}
+	defer syscall.SyscallN((*[3]uintptr)(unsafe.Pointer(*(*uintptr)(unsafe.Pointer(enumerator))))[2], enumerator)
+
+	var device uintptr
+	ret, _, _ = syscall.SyscallN((*[10]uintptr)(unsafe.Pointer(*(*uintptr)(unsafe.Pointer(enumerator))))[4], enumerator, 0, 1, uintptr(unsafe.Pointer(&device)))
+	if ret != 0 || device == 0 {
+		return -1
+	}
+	defer syscall.SyscallN((*[3]uintptr)(unsafe.Pointer(*(*uintptr)(unsafe.Pointer(device))))[2], device)
+
+	var audioEndpointVolume uintptr
+	ret, _, _ = syscall.SyscallN((*[10]uintptr)(unsafe.Pointer(*(*uintptr)(unsafe.Pointer(device))))[3], device, uintptr(unsafe.Pointer(&IID_IAudioEndpointVolume)), 23, 0, uintptr(unsafe.Pointer(&audioEndpointVolume)))
+	if ret != 0 || audioEndpointVolume == 0 {
+		return -1
+	}
+	defer syscall.SyscallN((*[3]uintptr)(unsafe.Pointer(*(*uintptr)(unsafe.Pointer(audioEndpointVolume))))[2], audioEndpointVolume)
+
+	var vol float32
+	syscall.SyscallN((*[15]uintptr)(unsafe.Pointer(*(*uintptr)(unsafe.Pointer(audioEndpointVolume))))[9], audioEndpointVolume, uintptr(unsafe.Pointer(&vol)))
+
+	return int(vol * 100.0)
+}
+
+func setSystemVolumeNatively(target int) {
+	if target < 0 {
+		target = 0
+	}
+	if target > 100 {
+		target = 100
+	}
+
+	for i := 0; i < 50; i++ {
+		curr := getSystemVolumeNative()
+		if curr == -1 || curr == target {
+			break
+		}
+
+		diff := curr - target
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff <= 1 {
+			break
+		}
+
+		vk := VK_VOLUME_UP
+		if curr > target {
+			vk = VK_VOLUME_DOWN
+		}
+		procKeybdEvent.Call(uintptr(vk), 0, 0, 0)
+		procKeybdEvent.Call(uintptr(vk), 0, 2, 0)
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func updatePowerPlanStatus() {
+	var schemeGuid *syscall.GUID
+	ret, _, _ := procPowerGetActiveScheme.Call(0, uintptr(unsafe.Pointer(&schemeGuid)))
+	if ret == 0 && schemeGuid != nil {
+		sysPowerPlanGUID = fmt.Sprintf("%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+			schemeGuid.Data1, schemeGuid.Data2, schemeGuid.Data3,
+			schemeGuid.Data4[0], schemeGuid.Data4[1], schemeGuid.Data4[2], schemeGuid.Data4[3],
+			schemeGuid.Data4[4], schemeGuid.Data4[5], schemeGuid.Data4[6], schemeGuid.Data4[7])
+
+		var bufferSize uint32
+		procPowerReadFriendlyName.Call(0, uintptr(unsafe.Pointer(schemeGuid)), 0, 0, 0, uintptr(unsafe.Pointer(&bufferSize)))
+		if bufferSize > 0 {
+			buf := make([]uint16, bufferSize/2)
+			if r, _, _ := procPowerReadFriendlyName.Call(0, uintptr(unsafe.Pointer(schemeGuid)), 0, 0, uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&bufferSize))); r == 0 {
+				sysPowerPlan = syscall.UTF16ToString(buf)
+			}
+		}
+		procLocalFree.Call(uintptr(unsafe.Pointer(schemeGuid)))
+	}
+}
+
 func startToolsScanner() {
 	go func() {
 		for {
-			var status struct {
-				ACLineStatus, BatteryFlag, BatteryLifePercent, Reserved1 byte
-				BatteryLifeTime, BatteryFullLifeTime                     uint32
+			if (isAsus && currentPage == 4) || (!isAsus && currentPage == 3) {
+				if v := getSystemVolumeNative(); v != -1 && !isDraggingVolume {
+					sysVolumeVal = v
+				}
+
+				if isLaptop && !isDraggingBrightness {
+					cmdBr := exec.Command("powershell", "-NoProfile", "-Command", "(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness -ErrorAction SilentlyContinue).CurrentBrightness")
+					cmdBr.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+					if outBr, err := cmdBr.Output(); err == nil {
+						if v, err := strconv.Atoi(strings.TrimSpace(string(outBr))); err == nil {
+							sysBrightnessVal = v
+						}
+					}
+				}
+				procInvalidateRect.Call(uintptr(hwndMain), 0, 1)
 			}
 
-			if ret, _, _ := procGetSystemPowerStatus.Call(uintptr(unsafe.Pointer(&status))); ret != 0 {
-				if status.BatteryFlag != 128 && status.BatteryLifePercent <= 100 {
+			if isLaptop {
+				var status struct {
+					ACLineStatus, BatteryFlag, BatteryLifePercent, Reserved1 byte
+					BatteryLifeTime, BatteryFullLifeTime                     uint32
+				}
+				if ret, _, _ := procGetSystemPowerStatus.Call(uintptr(unsafe.Pointer(&status))); ret != 0 {
 					batteryLevel = fmt.Sprintf("%.1f%%", float64(status.BatteryLifePercent))
-					sysBatteryPercent = fmt.Sprintf("%d%%", status.BatteryLifePercent)
-
 					if status.ACLineStatus == 1 {
-						sysBatteryPercent += " (Plugged In)"
-					}
-				} else {
-					sysBatteryPercent = "Desktop PC (No Battery)"
-					batteryLevel = "N/A"
-				}
-			}
-
-			cmdPower := exec.Command("cmd", "/c", "powercfg /getactivescheme")
-			cmdPower.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-			if out, err := cmdPower.Output(); err == nil {
-				outStr := string(out)
-				if strings.Contains(outStr, "(") && strings.Contains(outStr, ")") {
-					start := strings.Index(outStr, "(") + 1
-					end := strings.Index(outStr, ")")
-					if start < end {
-						sysPowerPlan = outStr[start:end]
-					}
-				}
-			}
-
-			if isAsusLaptop {
-				cmdBright := exec.Command("powershell", "-NoProfile", "-Command", "(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness -ErrorAction SilentlyContinue).CurrentBrightness")
-				cmdBright.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-				if out, err := cmdBright.Output(); err == nil {
-					res := strings.TrimSpace(string(out))
-					if res != "" {
-						sysBrightness = res + "%"
+						sysBatteryPercent = fmt.Sprintf("%d%% (Plugged In)", status.BatteryLifePercent)
 					} else {
-						sysBrightness = "External / NA"
+						sysBatteryPercent = fmt.Sprintf("%d%%", status.BatteryLifePercent)
 					}
 				}
 			} else {
-				sysBrightness = "PC / External Monitor"
+				sysBatteryPercent = "AC Power (Desktop PC)"
+				batteryLevel = "N/A"
+				tick, _, _ := procGetTickCount64.Call()
+				uptimeSec := tick / 1000
+				hours := uptimeSec / 3600
+				mins := (uptimeSec % 3600) / 60
+				sysUptime = fmt.Sprintf("%dh %dm", hours, mins)
 			}
 
-			sysVolume = "System Audio Active"
+			if atomic.LoadUint32(&loadingButtonID) == 0 {
+				updatePowerPlanStatus()
+			}
 
-			if (isAsusLaptop && currentPage == 4) || (!isAsusLaptop && currentPage == 3) {
+			if isAsus && currentPage == 2 {
 				procInvalidateRect.Call(uintptr(hwndMain), 0, 1)
 			}
-			if isAsusLaptop && currentPage == 2 {
-				procInvalidateRect.Call(uintptr(hwndMain), 0, 1)
-			}
 
-			time.Sleep(8 * time.Second)
+			time.Sleep(2 * time.Second)
 		}
 	}()
 }

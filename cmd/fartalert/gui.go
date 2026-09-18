@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,7 +15,6 @@ import (
 	"unsafe"
 )
 
-// مدیریت رجیستری برای اجرای خودکار
 func checkStartup() {
 	out, _ := exec.Command("cmd", "/c", `reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v SysGuard`).Output()
 	if strings.Contains(string(out), "SysGuard") {
@@ -31,17 +31,48 @@ func toggleStartup() {
 		exec.Command("cmd", "/c", fmt.Sprintf(`reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v SysGuard /t REG_SZ /d "\"%s\"" /f`, exe)).Run()
 		runAtStartup = true
 	}
+	saveSettings()
 }
 
-// تابع صدای تمام دکمه‌ها
 func playUIClick() {
 	if uiSoundEnabled {
-		go procBeep.Call(uintptr(700), uintptr(30)) // یک تیک نرم و کوتاه
+		go procBeep.Call(uintptr(700), uintptr(30))
 	}
 }
 
+func blendColor(c1, c2 uint32, t float64) uint32 {
+	r1, g1, b1 := c1&0xFF, (c1>>8)&0xFF, (c1>>16)&0xFF
+	r2, g2, b2 := c2&0xFF, (c2>>8)&0xFF, (c2>>16)&0xFF
+	r := uint32(float64(r1) + t*(float64(r2)-float64(r1)))
+	g := uint32(float64(g1) + t*(float64(g2)-float64(g1)))
+	b := uint32(float64(b1) + t*(float64(b2)-float64(b1)))
+	return r | (g << 8) | (b << 16)
+}
+
+func drawModernProgressBar(hdc uintptr, x, y, width, height, percent int, color uint32) {
+	drawRect(hdc, x, y, x+width, y+height, height/2, RGB(40, 48, 60))
+	if percent > 0 {
+		if percent > 100 {
+			percent = 100
+		}
+		fillWidth := (width * percent) / 100
+		drawRect(hdc, x, y, x+fillWidth, y+height, height/2, color)
+	}
+}
+
+func updateSliderValue(mouseX, startX, width int32, val *int) {
+	pct := float64(mouseX-startX) / float64(width) * 100.0
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	*val = int(pct)
+}
+
 func updateTabButtonsVisibility() {
-	showG := (isAsusLaptop && currentPage == 2)
+	showG := (isAsus && currentPage == 2)
 	swG := SW_HIDE
 	if showG {
 		swG = SW_SHOW
@@ -60,8 +91,23 @@ func updateTabButtonsVisibility() {
 	}
 	procShowWindow.Call(uintptr(hwndBtnSysInfo), uintptr(swD))
 
-	// دکمه‌های تب تنظیمات
-	showS := (isAsusLaptop && currentPage == 5) || (!isAsusLaptop && currentPage == 4)
+	// دکمه‌های جدید نگهداری فقط در تب Tools نمایش داده می‌شوند
+	showTools := (isAsus && currentPage == 4) || (!isAsus && currentPage == 3)
+	swT := SW_HIDE
+	if showTools {
+		swT = SW_SHOW
+	}
+
+	procShowWindow.Call(uintptr(hwndBtnPwrSave), uintptr(swT))
+	procShowWindow.Call(uintptr(hwndBtnPwrBal), uintptr(swT))
+	procShowWindow.Call(uintptr(hwndBtnPwrHigh), uintptr(swT))
+	procShowWindow.Call(uintptr(hwndBtnSound), uintptr(swT))
+	procShowWindow.Call(uintptr(hwndBtnDiag), uintptr(swT))
+	procShowWindow.Call(uintptr(hwndBtnAnalyze), uintptr(swT))
+	procShowWindow.Call(uintptr(hwndBtnClean), uintptr(swT))
+	procShowWindow.Call(uintptr(hwndBtnEventLog), uintptr(swT))
+
+	showS := (isAsus && currentPage == 5) || (!isAsus && currentPage == 4)
 	swS := SW_HIDE
 	if showS {
 		swS = SW_SHOW
@@ -69,6 +115,28 @@ func updateTabButtonsVisibility() {
 	procShowWindow.Call(uintptr(hwndBtnLang), uintptr(swS))
 	procShowWindow.Call(uintptr(hwndBtnSoundToggle), uintptr(swS))
 	procShowWindow.Call(uintptr(hwndBtnStartup), uintptr(swS))
+
+	if hwndTabDash != 0 {
+		procInvalidateRect.Call(uintptr(hwndTabDash), 0, 1)
+	}
+	if hwndTabNet != 0 {
+		procInvalidateRect.Call(uintptr(hwndTabNet), 0, 1)
+	}
+	if hwndTabPower != 0 {
+		procInvalidateRect.Call(uintptr(hwndTabPower), 0, 1)
+	}
+	if hwndTabGamepad != 0 {
+		procInvalidateRect.Call(uintptr(hwndTabGamepad), 0, 1)
+	}
+	if hwndTabTools != 0 {
+		procInvalidateRect.Call(uintptr(hwndTabTools), 0, 1)
+	}
+	if hwndTabSettings != 0 {
+		procInvalidateRect.Call(uintptr(hwndTabSettings), 0, 1)
+	}
+
+	procInvalidateRect.Call(uintptr(hwndMain), 0, 1)
+	procUpdateWindow.Call(uintptr(hwndMain))
 }
 
 func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
@@ -76,10 +144,12 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 	case WM_ERASEBKGND:
 		return 1
 	case WM_CREATE:
+		loadSettings()
+
 		brushPtr, _, _ := procCreateSolidBrush.Call(uintptr(RGB(10, 14, 25)))
 		hBrushBg = syscall.Handle(brushPtr)
 
-		checkStartup() // بررسی استارت‌آپ هنگام لود برنامه
+		checkStartup()
 
 		procSetTimer.Call(uintptr(hwnd), 1, 30, 0)
 		startHardwareScanner()
@@ -102,7 +172,7 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 			procInvalidateRect.Call(uintptr(hwndWidget), 0, 1)
 		}
 
-		if (isAsusLaptop && currentPage == 3) || (!isAsusLaptop && currentPage == 2) {
+		if (isAsus && currentPage == 3) || (!isAsus && currentPage == 2) {
 			procInvalidateRect.Call(uintptr(hwnd), 0, 1)
 		}
 
@@ -118,24 +188,86 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 				hBtn = hwndBtnAnalyze
 			case IDC_BTN_CLEAN:
 				hBtn = hwndBtnClean
+			case IDC_BTN_EVENT_LOG:
+				hBtn = hwndBtnEventLog
 			case IDC_BTN_SYSINFO:
 				hBtn = hwndBtnSysInfo
-			case IDC_MODE_SILENT:
-				hBtn = hwndBtnSilent
-			case IDC_MODE_BALANCED:
-				hBtn = hwndBtnBalanced
-			case IDC_MODE_TURBO:
-				hBtn = hwndBtnTurbo
-			case IDC_GPU_ECO:
-				hBtn = hwndBtnEco
-			case IDC_GPU_STD:
-				hBtn = hwndBtnStandard
-			case IDC_GPU_ULTRA:
-				hBtn = hwndBtnUltra
+			case IDC_TOOL_PWR_SAVE:
+				hBtn = hwndBtnPwrSave
+			case IDC_TOOL_PWR_BAL:
+				hBtn = hwndBtnPwrBal
+			case IDC_TOOL_PWR_HIGH:
+				hBtn = hwndBtnPwrHigh
+			case IDC_SET_LANG:
+				hBtn = hwndBtnLang
 			}
 			if hBtn != 0 {
 				procInvalidateRect.Call(uintptr(hBtn), 0, 1)
 			}
+		}
+
+	case WM_LBUTTONDOWN:
+		x := int32(lParam & 0xFFFF)
+		y := int32((lParam >> 16) & 0xFFFF)
+
+		if (isAsus && currentPage == 4) || (!isAsus && currentPage == 3) {
+			if isLaptop && x >= 230 && x <= 420 && y >= 275 && y <= 305 {
+				isDraggingBrightness = true
+				user32.NewProc("SetCapture").Call(uintptr(hwnd))
+				updateSliderValue(x, 230, 190, &sysBrightnessVal)
+				rectUpdate := RECT{Left: 210, Top: 270, Right: 490, Bottom: 320}
+				procInvalidateRect.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&rectUpdate)), 0)
+				return 0
+			}
+			if x >= 530 && x <= 720 && y >= 275 && y <= 305 {
+				isDraggingVolume = true
+				user32.NewProc("SetCapture").Call(uintptr(hwnd))
+				updateSliderValue(x, 530, 190, &sysVolumeVal)
+				rectUpdate := RECT{Left: 510, Top: 270, Right: 790, Bottom: 320}
+				procInvalidateRect.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&rectUpdate)), 0)
+				return 0
+			}
+		}
+
+		user32.NewProc("ReleaseCapture").Call()
+		procSendMessage.Call(uintptr(hwnd), uintptr(WM_NCLBUTTONDOWN), uintptr(HTCAPTION), 0)
+		return 0
+
+	case WM_MOUSEMOVE:
+		if isDraggingBrightness || isDraggingVolume {
+			x := int32(lParam & 0xFFFF)
+			if isDraggingBrightness {
+				updateSliderValue(x, 230, 190, &sysBrightnessVal)
+				rectUpdate := RECT{Left: 210, Top: 270, Right: 490, Bottom: 320}
+				procInvalidateRect.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&rectUpdate)), 0)
+			} else if isDraggingVolume {
+				updateSliderValue(x, 530, 190, &sysVolumeVal)
+				rectUpdate := RECT{Left: 510, Top: 270, Right: 790, Bottom: 320}
+				procInvalidateRect.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&rectUpdate)), 0)
+			}
+			return 0
+		}
+
+	case WM_LBUTTONUP:
+		if isDraggingBrightness {
+			isDraggingBrightness = false
+			user32.NewProc("ReleaseCapture").Call()
+			saveSettings()
+			go func(val int) {
+				cmd := exec.Command("powershell", "-NoProfile", "-Command", fmt.Sprintf("(Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1, %d)", val))
+				cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+				cmd.Run()
+			}(sysBrightnessVal)
+			return 0
+		}
+		if isDraggingVolume {
+			isDraggingVolume = false
+			user32.NewProc("ReleaseCapture").Call()
+			saveSettings()
+			go func(val int) {
+				setSystemVolumeNatively(val)
+			}(sysVolumeVal)
+			return 0
 		}
 
 	case WM_CTLCOLORSTATIC:
@@ -147,6 +279,78 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 	case WM_DRAWITEM:
 		dis := (*DRAWITEMSTRUCT)(unsafe.Pointer(lParam))
 		if dis.CtlType == ODT_BUTTON {
+
+			// --- رندر کردن کارت‌های اطلاعاتی نگهداری سیستم ---
+			isMaintenanceBtn := (dis.CtlID >= 1001 && dis.CtlID <= 1006) && dis.CtlID != IDC_BTN_SYSINFO
+			if isMaintenanceBtn {
+				currentLoading := atomic.LoadUint32(&loadingButtonID)
+				isDown := (dis.ItemState & ODS_SELECTED) != 0
+
+				var borderColor uint32
+				var title, desc string
+
+				switch dis.CtlID {
+				case IDC_BTN_SOUND:
+					borderColor = RGB(200, 80, 255)
+					title = T("🔊 Audio Test", "🔊 تست موتور صدا")
+					desc = T("Sends a signal to wake and test audio drivers.", "ارسال سیگنال برای تست درایور کارت صدا.")
+				case IDC_BTN_DIAG:
+					borderColor = RGB(0, 200, 255)
+					title = T("🔄 Force Sync", "🔄 همگام‌سازی")
+					desc = T("Syncs system clock & flushes stale DNS cache.", "تنظیم دقیق ساعت و پاکسازی کش اینترنت.")
+				case IDC_BTN_CLEAN:
+					borderColor = RGB(255, 140, 50)
+					title = T("🧹 Deep Clean", "🧹 پاکسازی عمیق")
+					desc = T("Frees up space by deleting temporary & junk files.", "حذف فایل‌های موقت و آزادسازی فضای هارد.")
+				case IDC_BTN_ANALYZE:
+					borderColor = RGB(0, 255, 150)
+					title = T("⚙️ Hardware Limits", "⚙️ آنالیز گلوگاه قطعات")
+					desc = T("Analyzes 7-day telemetry to find weak components.", "تحلیل دیتای ۷ روزه برای تشخیص قطعه ضعیف سیستم.")
+				case IDC_BTN_EVENT_LOG:
+					borderColor = RGB(255, 80, 100)
+					title = T("🧠 AI Error Diagnostic", "🧠 هوش مصنوعی سیستم")
+					desc = T("Scans hidden OS logs and finds solutions via AI.", "کشف خطاهای پنهان ویندوز با هوش مصنوعی.")
+				}
+
+				fillColor := uint32(RGB(15, 20, 30))
+				txtColor := borderColor
+
+				if currentLoading == dis.CtlID {
+					rad := globalHue * math.Pi / 180.0
+					t := (math.Sin(rad*2.0) + 1.0) / 2.0
+					fillColor = blendColor(RGB(15, 20, 30), borderColor, t)
+					txtColor = RGB(255, 255, 255)
+				} else if isDown {
+					fillColor = borderColor
+					txtColor = RGB(10, 14, 25)
+				}
+
+				drawRect(uintptr(dis.Hdc), int(dis.RcItem.Left), int(dis.RcItem.Top), int(dis.RcItem.Right), int(dis.RcItem.Bottom), 14, borderColor)
+				if fillColor != borderColor {
+					drawRect(uintptr(dis.Hdc), int(dis.RcItem.Left)+2, int(dis.RcItem.Top)+2, int(dis.RcItem.Right)-2, int(dis.RcItem.Bottom)-2, 12, fillColor)
+				}
+
+				// رندر تایتل دکمه
+				rTitle := RECT{Left: dis.RcItem.Left + 5, Top: dis.RcItem.Top + 14, Right: dis.RcItem.Right - 5, Bottom: dis.RcItem.Bottom}
+				procSelectObject.Call(uintptr(dis.Hdc), uintptr(hFontNormal))
+				procSetBkMode.Call(uintptr(dis.Hdc), uintptr(TRANSPARENT))
+				procSetTextColor.Call(uintptr(dis.Hdc), uintptr(txtColor))
+				DrawTextSafe(uintptr(dis.Hdc), title, &rTitle, DT_CENTER|DT_TOP|DT_SINGLELINE)
+
+				// رندر توضیحات با فونت ریزتر
+				rDesc := RECT{Left: dis.RcItem.Left + 8, Top: dis.RcItem.Top + 38, Right: dis.RcItem.Right - 8, Bottom: dis.RcItem.Bottom}
+				procSelectObject.Call(uintptr(dis.Hdc), uintptr(hFontSmall))
+				descColor := uint32(RGB(140, 150, 160))
+				if isDown || currentLoading == dis.CtlID {
+					descColor = txtColor
+				}
+				procSetTextColor.Call(uintptr(dis.Hdc), uintptr(descColor))
+				DrawTextSafe(uintptr(dis.Hdc), desc, &rDesc, DT_CENTER|DT_TOP|0x00000010) // 0x10 = DT_WORDBREAK
+
+				return 1
+			}
+
+			// --- رندر دکمه‌های تب‌ها و تنظیمات ---
 			if dis.CtlID == IDC_BTN_SYSINFO {
 				currentLoading := atomic.LoadUint32(&loadingButtonID)
 				isDown := (dis.ItemState & ODS_SELECTED) != 0
@@ -156,77 +360,68 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 				text := T("📄 Full System Info", "📄 اطلاعات جامع قطعات")
 
 				if currentLoading == dis.CtlID {
-					rgbColor := HSVtoRGB(globalHue, 1.0, 1.0)
-					borderColor, txtColor = rgbColor, rgbColor
-					text = T("⏳ Loading...", "⏳ در حال ساخت گزارش...")
+					rad := globalHue * math.Pi / 180.0
+					t := (math.Sin(rad*2.0) + 1.0) / 2.0
+					fillColor = blendColor(RGB(15, 20, 30), borderColor, t)
+					txtColor = RGB(255, 255, 255)
 				} else if isDown {
 					fillColor = borderColor
 					txtColor = RGB(10, 14, 25)
 				}
 
 				drawRect(uintptr(dis.Hdc), int(dis.RcItem.Left), int(dis.RcItem.Top), int(dis.RcItem.Right), int(dis.RcItem.Bottom), 14, borderColor)
-				if currentLoading != dis.CtlID && fillColor != borderColor {
+				if fillColor != borderColor {
 					drawRect(uintptr(dis.Hdc), int(dis.RcItem.Left)+2, int(dis.RcItem.Top)+2, int(dis.RcItem.Right)-2, int(dis.RcItem.Bottom)-2, 12, fillColor)
 				}
+
 				procSelectObject.Call(uintptr(dis.Hdc), uintptr(hFontNormal))
 				procSetBkMode.Call(uintptr(dis.Hdc), uintptr(TRANSPARENT))
 				procSetTextColor.Call(uintptr(dis.Hdc), uintptr(txtColor))
 				DrawTextSafe(uintptr(dis.Hdc), text, &dis.RcItem, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
-			} else {
-				drawCustomButton(dis)
+				return 1
 			}
+
+			drawCustomButton(dis)
 			return 1
 		}
 
 	case WM_COMMAND:
 		if int(wParam>>16) == BN_CLICKED {
-			playUIClick() // پخش صدای کلیک در صورت فعال بودن تنظیمات
+			playUIClick()
 			cmdID := int(wParam & 0xFFFF)
 			switch cmdID {
 			case IDC_TAB_DASH:
 				currentPage = 0
-				procShowWindow.Call(uintptr(hwndChkWidget), SW_SHOW)
 				updateTabButtonsVisibility()
-				procInvalidateRect.Call(uintptr(hwnd), 0, 1)
 			case IDC_TAB_NET:
 				currentPage = 1
-				procShowWindow.Call(uintptr(hwndChkWidget), SW_HIDE)
 				updateTabButtonsVisibility()
-				procInvalidateRect.Call(uintptr(hwnd), 0, 1)
 			case IDC_TAB_POWER:
-				if isAsusLaptop {
+				if isAsus {
 					currentPage = 2
-					procShowWindow.Call(uintptr(hwndChkWidget), SW_HIDE)
 					updateTabButtonsVisibility()
-					procInvalidateRect.Call(uintptr(hwnd), 0, 1)
 				}
 			case IDC_TAB_GAMEPAD:
-				if isAsusLaptop {
+				if isAsus {
 					currentPage = 3
 				} else {
 					currentPage = 2
 				}
-				procShowWindow.Call(uintptr(hwndChkWidget), SW_HIDE)
 				updateTabButtonsVisibility()
-				procInvalidateRect.Call(uintptr(hwnd), 0, 1)
 			case IDC_TAB_TOOLS:
-				if isAsusLaptop {
+				if isAsus {
 					currentPage = 4
 				} else {
 					currentPage = 3
 				}
-				procShowWindow.Call(uintptr(hwndChkWidget), SW_HIDE)
 				updateTabButtonsVisibility()
-				procInvalidateRect.Call(uintptr(hwnd), 0, 1)
-			case IDC_TAB_SETTINGS: // کلیک روی تب تنظیمات
-				if isAsusLaptop {
+			case IDC_TAB_SETTINGS:
+				if isAsus {
 					currentPage = 5
 				} else {
 					currentPage = 4
 				}
-				procShowWindow.Call(uintptr(hwndChkWidget), SW_HIDE)
 				updateTabButtonsVisibility()
-				procInvalidateRect.Call(uintptr(hwnd), 0, 1)
 
 			case IDC_CHK_WIDGET:
 				state, _, _ := procSendMessage.Call(uintptr(hwndChkWidget), BM_GETCHECK, 0, 0)
@@ -239,40 +434,123 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 				}
 
 			case IDC_SET_LANG:
-				if uiLanguage == "EN" {
-					uiLanguage = "FA"
-				} else {
-					uiLanguage = "EN"
+				if atomic.LoadUint32(&loadingButtonID) == 0 {
+					atomic.StoreUint32(&loadingButtonID, IDC_SET_LANG)
+					procInvalidateRect.Call(uintptr(hwndBtnLang), 0, 1)
+					go func() {
+						time.Sleep(500 * time.Millisecond)
+						if uiLanguage == "EN" {
+							uiLanguage = "FA"
+						} else {
+							uiLanguage = "EN"
+						}
+						saveSettings()
+						atomic.StoreUint32(&loadingButtonID, 0)
+						chkText, _ := syscall.UTF16PtrFromString(T(" Enable RGB Desktop Overlay", " فعال‌سازی ویجت دسکتاپ (RGB)"))
+						procSetWindowText.Call(uintptr(hwndChkWidget), uintptr(unsafe.Pointer(chkText)))
+						updateTabButtonsVisibility()
+					}()
 				}
-				procInvalidateRect.Call(uintptr(hwnd), 0, 1) // رفرش کل صفحه برای تغییر زبان
+
 			case IDC_SET_SOUND:
 				uiSoundEnabled = !uiSoundEnabled
+				saveSettings()
 				procInvalidateRect.Call(uintptr(hwndBtnSoundToggle), 0, 1)
 			case IDC_SET_STARTUP:
 				toggleStartup()
 				procInvalidateRect.Call(uintptr(hwndBtnStartup), 0, 1)
 
+			case IDC_TOOL_PWR_SAVE:
+				if strings.EqualFold(sysPowerPlanGUID, "a1841308-3541-4fab-bc81-f71556f20b4a") {
+					break
+				}
+				if atomic.LoadUint32(&loadingButtonID) == 0 {
+					atomic.StoreUint32(&loadingButtonID, IDC_TOOL_PWR_SAVE)
+					sysPowerPlanGUID = "loading_state"
+					procInvalidateRect.Call(uintptr(hwndBtnPwrSave), 0, 1)
+					procInvalidateRect.Call(uintptr(hwndBtnPwrBal), 0, 1)
+					procInvalidateRect.Call(uintptr(hwndBtnPwrHigh), 0, 1)
+					go func() {
+						cmd := exec.Command("powercfg", "/setactive", "a1841308-3541-4fab-bc81-f71556f20b4a")
+						cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+						cmd.Run()
+						time.Sleep(600 * time.Millisecond)
+						updatePowerPlanStatus()
+						atomic.StoreUint32(&loadingButtonID, 0)
+						procInvalidateRect.Call(uintptr(hwndMain), 0, 1)
+					}()
+				}
+			case IDC_TOOL_PWR_BAL:
+				if strings.EqualFold(sysPowerPlanGUID, "381b4222-f694-41f0-9685-ff5bb260df2e") {
+					break
+				}
+				if atomic.LoadUint32(&loadingButtonID) == 0 {
+					atomic.StoreUint32(&loadingButtonID, IDC_TOOL_PWR_BAL)
+					sysPowerPlanGUID = "loading_state"
+					procInvalidateRect.Call(uintptr(hwndBtnPwrSave), 0, 1)
+					procInvalidateRect.Call(uintptr(hwndBtnPwrBal), 0, 1)
+					procInvalidateRect.Call(uintptr(hwndBtnPwrHigh), 0, 1)
+					go func() {
+						cmd := exec.Command("powercfg", "/setactive", "381b4222-f694-41f0-9685-ff5bb260df2e")
+						cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+						cmd.Run()
+						time.Sleep(600 * time.Millisecond)
+						updatePowerPlanStatus()
+						atomic.StoreUint32(&loadingButtonID, 0)
+						procInvalidateRect.Call(uintptr(hwndMain), 0, 1)
+					}()
+				}
+			case IDC_TOOL_PWR_HIGH:
+				if strings.EqualFold(sysPowerPlanGUID, "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c") {
+					break
+				}
+				if atomic.LoadUint32(&loadingButtonID) == 0 {
+					atomic.StoreUint32(&loadingButtonID, IDC_TOOL_PWR_HIGH)
+					sysPowerPlanGUID = "loading_state"
+					procInvalidateRect.Call(uintptr(hwndBtnPwrSave), 0, 1)
+					procInvalidateRect.Call(uintptr(hwndBtnPwrBal), 0, 1)
+					procInvalidateRect.Call(uintptr(hwndBtnPwrHigh), 0, 1)
+					go func() {
+						cmd := exec.Command("powercfg", "/setactive", "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c")
+						cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+						cmd.Run()
+						time.Sleep(600 * time.Millisecond)
+						updatePowerPlanStatus()
+						atomic.StoreUint32(&loadingButtonID, 0)
+						procInvalidateRect.Call(uintptr(hwndMain), 0, 1)
+					}()
+				}
+
 			case IDC_MODE_SILENT:
 				currentPowerMode = "Silent"
+				saveSettings()
 				procInvalidateRect.Call(uintptr(hwnd), 0, 1)
 			case IDC_MODE_BALANCED:
 				currentPowerMode = "Balanced"
+				saveSettings()
 				procInvalidateRect.Call(uintptr(hwnd), 0, 1)
 			case IDC_MODE_TURBO:
 				currentPowerMode = "Turbo"
+				saveSettings()
 				procInvalidateRect.Call(uintptr(hwnd), 0, 1)
 			case IDC_GPU_ECO:
 				currentGpuMode = "Eco"
+				saveSettings()
 				procInvalidateRect.Call(uintptr(hwnd), 0, 1)
 			case IDC_GPU_STD:
 				currentGpuMode = "Standard"
+				saveSettings()
 				procInvalidateRect.Call(uintptr(hwnd), 0, 1)
 			case IDC_GPU_ULTRA:
 				currentGpuMode = "Ultimate"
+				saveSettings()
 				procInvalidateRect.Call(uintptr(hwnd), 0, 1)
 
 			case IDC_BTN_SYSINFO:
 				OpenSysInfoWindow()
+
+			case IDC_BTN_EVENT_LOG:
+				OpenAnalyzerWindow()
 
 			case IDC_BTN_SOUND:
 				if atomic.LoadUint32(&loadingButtonID) == 0 {
@@ -291,20 +569,16 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 						cmdTime := exec.Command("cmd", "/c", "w32tm /resync")
 						cmdTime.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 						cmdTime.Run()
-
 						cmdDNS := exec.Command("cmd", "/c", "ipconfig /flushdns")
 						cmdDNS.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 						cmdDNS.Run()
-
 						time.Sleep(1 * time.Second)
-
 						atomic.StoreUint32(&loadingButtonID, 0)
 						procInvalidateRect.Call(uintptr(hwndBtnDiag), 0, 1)
-
 						ShowMessageBox(hwndMain, T("System Time synced and DNS Cache flushed successfully.", "ساعت ویندوز و کش اینترنت با موفقیت همگام‌سازی شدند."), T("Force Sync", "همگام‌سازی"), 0x00000040)
 					}()
 				}
-			case IDC_BTN_ANALYZE:
+			case IDC_BTN_ANALYZE: // برگشت سیستم آنالیز سخت‌افزاری بر اساس تلمتری
 				if atomic.LoadUint32(&loadingButtonID) == 0 {
 					atomic.StoreUint32(&loadingButtonID, IDC_BTN_ANALYZE)
 					go func() {
@@ -339,71 +613,70 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 						comps := []Component{}
 
 						cScore := cAvg
-						cReason := fmt.Sprintf(T("Average Load: %.1f%% - ", "فشار پردازشی: %.1f%% - "), cAvg)
+						cReason := fmt.Sprintf(T("Avg Load: %.1f%% - ", "فشار پردازشی: %.1f%% - "), cAvg)
 						if cAvg > 85 {
 							cScore += 30
-							cReason += T("CRITICAL: Processor is heavily bottlenecking the system.", "بحرانی: پردازنده به شدت ضعیف است و باعث افت فریم می‌شود.")
+							cReason += T("CRITICAL: Processor is bottlenecking.", "بحرانی: پردازنده باعث افت فریم می‌شود.")
 						} else if cAvg > 60 {
 							cReason += T("Moderate load. Good for now.", "فشار متوسط است. در حال حاضر مشکلی ندارد.")
 						} else {
-							cReason += T("Excellent. Plenty of processing headroom.", "عالی. پردازنده قدرت بسیار زیادی برای کارهای سنگین دارد.")
+							cReason += T("Excellent headroom.", "عالی. پردازنده قدرت کافی دارد.")
 						}
-						comps = append(comps, Component{T("Processor (CPU)", "پردازنده اصلی (CPU)"), cScore, cReason})
+						comps = append(comps, Component{T("Processor (CPU)", "پردازنده (CPU)"), cScore, cReason})
 
 						rScore := rAvg
-						rReason := fmt.Sprintf(T("Average Usage: %.1f%% - ", "میانگین مصرف: %.1f%% - "), rAvg)
+						rReason := fmt.Sprintf(T("Avg Usage: %.1f%% - ", "مصرف: %.1f%% - "), rAvg)
 						if rAvg > 85 {
 							rScore += 40
-							rReason += T("CRITICAL: Running out of memory! Upgrade RAM immediately.", "بحرانی: ظرفیت رم در حال پر شدن است! حتماً رم را ارتقا دهید.")
+							rReason += T("CRITICAL: Upgrade RAM immediately.", "بحرانی: ظرفیت رم در حال پر شدن است.")
 						} else if totalRamGB <= 8 && rAvg > 60 {
 							rScore += 20
-							rReason += T("8GB is too low for modern apps. Upgrade to 16GB+ recommended.", "۸ گیگابایت رم برای برنامه‌های امروزی کم است. ارتقا پیشنهاد می‌شود.")
+							rReason += T("Consider 16GB+ upgrade.", "ارتقا رم به 16 گیگابایت پیشنهاد می‌شود.")
 						} else {
-							rReason += T("Memory capacity is sufficient.", "ظرفیت رم کاملاً جوابگوی نیازهای شماست.")
+							rReason += T("Memory capacity is sufficient.", "ظرفیت رم کاملاً جوابگو است.")
 						}
-						comps = append(comps, Component{T("Memory (RAM)", "حافظه موقت (RAM)"), rScore, rReason})
+						comps = append(comps, Component{T("Memory (RAM)", "رم (RAM)"), rScore, rReason})
 
 						gScore := gAvg
-						gReason := fmt.Sprintf(T("Average Load: %.1f%% - ", "فشار پردازشی: %.1f%% - "), gAvg)
+						gReason := fmt.Sprintf(T("Avg Load: %.1f%% - ", "فشار پردازشی: %.1f%% - "), gAvg)
 						if gAvg > 90 {
 							gScore += 25
-							gReason += T("High graphics load. Upgrade if experiencing gaming lag.", "فشار گرافیکی بالا. اگر در بازی‌ها لگ دارید گرافیک را ارتقا دهید.")
+							gReason += T("High load. Upgrade if gaming lags.", "فشار بالا. اگر لگ دارید گرافیک را ارتقا دهید.")
 						} else {
-							gReason += T("Graphics performance is optimal.", "عملکرد کارت گرافیک در وضعیت ایده‌آل است.")
+							gReason += T("Performance is optimal.", "کارت گرافیک در وضعیت ایده‌آل است.")
 						}
-						comps = append(comps, Component{T("Graphics (GPU)", "کارت گرافیک (GPU)"), gScore, gReason})
+						comps = append(comps, Component{T("Graphics (GPU)", "گرافیک (GPU)"), gScore, gReason})
 
 						dScore := dAvg
 						dReason := fmt.Sprintf(T("Space Used: %.1f%% - ", "فضای پر شده: %.1f%% - "), dAvg)
 						if dAvg > 90 {
 							dScore += 45
-							dReason += T("CRITICAL: Drive is almost full! Causes severe OS lag.", "بحرانی: درایو ویندوز پر شده است که باعث هنگی شدید سیستم می‌شود.")
+							dReason += T("CRITICAL: Drive almost full!", "بحرانی: درایو ویندوز در حال پر شدن است.")
 						} else if strings.Contains(strings.ToUpper(diskMediaType), "HDD") {
 							dScore += 60
-							dReason += T("CRITICAL: OS is on an HDD. Upgrade to SSD for massive speed boost.", "بحرانی: ویندوز روی هارد دیسک معمولی نصب است. خرید SSD سرعت را چند برابر می‌کند.")
+							dReason += T("CRITICAL: Upgrade to SSD.", "بحرانی: ویندوز روی هارد دیسک است. خرید SSD ضروری است.")
 						} else {
-							dReason += T("Storage health and capacity are good.", "وضعیت حافظه و درایوها بسیار عالی است.")
+							dReason += T("Storage health is good.", "وضعیت درایوها عالی است.")
 						}
-						comps = append(comps, Component{T("Storage (Disk)", "حافظه ذخیره‌سازی (SSD/HDD)"), dScore, dReason})
+						comps = append(comps, Component{T("Storage (Disk)", "حافظه (Disk)"), dScore, dReason})
 
 						sort.Slice(comps, func(i, j int) bool { return comps[i].Score > comps[j].Score })
 
-						report := T("🧠 AI Hardware Diagnostic Report\n", "🧠 گزارش تحلیل هوشمند سخت‌افزار\n")
+						report := T("🧠 Smart Hardware Analysis\n", "🧠 گزارش تحلیل سخت‌افزار (Bottleneck)\n")
 						if count > 0 {
-							report += fmt.Sprintf(T("Based on %d historical data points (last 30 days).\n\n", "بر اساس %d نقطه داده در 30 روز گذشته.\n\n"), int(count))
+							report += fmt.Sprintf(T("Based on %d historic data points.\n\n", "بر اساس %d نقطه داده تاریخی.\n\n"), int(count))
 						} else {
-							report += T("Based on current real-time snapshot.\n\n", "بر اساس اسکن زنده (برای دقت بالاتر برنامه را باز بگذارید).\n\n")
+							report += T("Based on current real-time snapshot.\n\n", "بر اساس اسکن لحظه‌ای (زنده).\n\n")
 						}
 
-						report += T("⚠️ UPGRADE PRIORITY RANKING (1 = Most Urgent):\n\n", "⚠️ رتبه‌بندی قطعات ضعیف جهت ارتقاء:\n\n")
+						report += T("⚠️ UPGRADE PRIORITY RANKING:\n\n", "⚠️ اولویت ارتقاء قطعات (شماره ۱ ضعیف‌ترین):\n\n")
 						for i, c := range comps {
 							report += fmt.Sprintf(T("Rank %d: %s\n   └ %s\n\n", "رتبه %d: %s\n   └ %s\n\n"), i+1, c.Name, c.Reason)
 						}
 
 						atomic.StoreUint32(&loadingButtonID, 0)
 						procInvalidateRect.Call(uintptr(hwndBtnAnalyze), 0, 1)
-
-						ShowMessageBox(hwndMain, report, T("Smart Hardware Analysis", "تحلیل هوش مصنوعی"), 0x00000040)
+						ShowMessageBox(hwndMain, report, T("Hardware Analysis", "آنالیز سخت‌افزار"), 0x00000040)
 					}()
 				}
 			case IDC_BTN_CLEAN:
@@ -490,17 +763,27 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 			} else if currentPage == 1 {
 				DrawTextSafe(hdc, T("ADVANCED NETWORK TRAFFIC", "ترافیک لحظه‌ای شبکه و اینترنت"), &contentRect, DT_LEFT|DT_TOP)
 
-				procSelectObject.Call(hdc, uintptr(hFontWidget))
-				setTextColor(hdc, RGB(0, 255, 150))
-				rIP := RECT{Left: int32(rect.Right - 220), Top: 48, Right: rect.Right - 30, Bottom: 70}
-				DrawTextSafe(hdc, sysIPAddress, &rIP, DT_RIGHT|DT_TOP)
+				panelColor := RGB(16, 22, 35)
+
+				ipBadgeLeft := int(rect.Right) - 230
+				drawRect(hdc, ipBadgeLeft, 33, int(rect.Right)-30, 67, 16, RGB(0, 210, 255))
+				drawRect(hdc, ipBadgeLeft+1, 34, int(rect.Right)-31, 66, 14, panelColor)
 
 				procSelectObject.Call(hdc, uintptr(hFontNormal))
+				setTextColor(hdc, RGB(0, 255, 150))
+				rIP := RECT{Left: int32(ipBadgeLeft), Top: 41, Right: rect.Right - 30, Bottom: 70}
+				DrawTextSafe(hdc, "🌐 "+sysIPAddress, &rIP, DT_CENTER|DT_TOP)
 
-				drawRect(hdc, 210, 90, int(rect.Right)-30, 145, 10, RGB(16, 22, 35))
-				drawRect(hdc, 210, 155, int(rect.Right)-30, 245, 10, RGB(16, 22, 35))
+				drawRect(hdc, 210, 90, int(rect.Right)-30, 145, 10, panelColor)
+				drawRect(hdc, 210, 155, int(rect.Right)-30, 245, 10, panelColor)
 
-				setTextColor(hdc, RGB(255, 120, 120))
+				statusColor := RGB(255, 120, 120)
+				if strings.Contains(netUpdateText, "RUNNING") {
+					statusColor = RGB(255, 180, 0)
+				} else if strings.Contains(netUpdateText, "STOPPED") {
+					statusColor = RGB(0, 255, 150)
+				}
+				setTextColor(hdc, statusColor)
 				contentRect.Top = 110
 				contentRect.Left = 230
 				DrawTextSafe(hdc, netUpdateText, &contentRect, DT_LEFT|DT_TOP)
@@ -522,8 +805,8 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 
 				drawAdvancedNetworkGraph(hdc, 210, 290, int(rect.Right)-240, 180, netDLHistory[:], netULHistory[:], maxNetSpeed)
 
-			} else if isAsusLaptop && currentPage == 2 {
-				DrawTextSafe(hdc, "G-HELPER CONTROL PANEL", &contentRect, DT_LEFT|DT_TOP)
+			} else if isAsus && currentPage == 2 {
+				DrawTextSafe(hdc, T("G-HELPER CONTROL PANEL", "کنترل پنل G-HELPER"), &contentRect, DT_LEFT|DT_TOP)
 				procSelectObject.Call(hdc, uintptr(hFontNormal))
 
 				panelColor := RGB(16, 22, 35)
@@ -531,22 +814,22 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 				drawRect(hdc, 210, 95, int(rect.Right)-30, 210, 12, panelColor)
 				setTextColor(hdc, RGB(0, 210, 255))
 				contentRect.Top, contentRect.Left = 110, 230
-				DrawTextSafe(hdc, fmt.Sprintf("⚡ Operating Mode: %s", currentPowerMode), &contentRect, DT_LEFT|DT_TOP)
+				DrawTextSafe(hdc, fmt.Sprintf(T("⚡ Operating Mode: %s", "⚡ پروفایل عملکرد: %s"), currentPowerMode), &contentRect, DT_LEFT|DT_TOP)
 
 				drawRect(hdc, 210, 225, int(rect.Right)-30, 340, 12, panelColor)
 				setTextColor(hdc, RGB(0, 255, 150))
 				contentRect.Top = 240
-				DrawTextSafe(hdc, fmt.Sprintf("🎮 GPU Ultimate Control: %s", currentGpuMode), &contentRect, DT_LEFT|DT_TOP)
+				DrawTextSafe(hdc, fmt.Sprintf(T("🎮 GPU Ultimate Control: %s", "🎮 کنترل مستقیم گرافیک: %s"), currentGpuMode), &contentRect, DT_LEFT|DT_TOP)
 
 				drawRect(hdc, 210, 355, int(rect.Right)-30, 465, 12, panelColor)
 				setTextColor(hdc, RGB(255, 180, 0))
 				contentRect.Top = 370
-				DrawTextSafe(hdc, fmt.Sprintf("🔋 Battery Charge Limit: %s (Current: %s)", batteryLimit, batteryLevel), &contentRect, DT_LEFT|DT_TOP)
+				DrawTextSafe(hdc, fmt.Sprintf(T("🔋 Battery Charge Limit: %s (Current: %s)", "🔋 محدودیت شارژ باتری: %s (فعلی: %s)"), batteryLimit, batteryLevel), &contentRect, DT_LEFT|DT_TOP)
 				setTextColor(hdc, RGB(180, 200, 220))
 				contentRect.Top = 405
-				DrawTextSafe(hdc, "Protecting battery lifespan with automated charge capping.", &contentRect, DT_LEFT|DT_TOP)
+				DrawTextSafe(hdc, T("Protecting battery lifespan with automated charge capping.", "محافظت از طول عمر باتری با کنترل هوشمند شارژ."), &contentRect, DT_LEFT|DT_TOP)
 
-			} else if (isAsusLaptop && currentPage == 3) || (!isAsusLaptop && currentPage == 2) {
+			} else if (isAsus && currentPage == 3) || (!isAsus && currentPage == 2) {
 
 				DrawTextSafe(hdc, T("GAMEPAD TESTER (PRO MODE)", "تست و مانیتورینگ دقیق دسته بازی"), &contentRect, DT_LEFT|DT_TOP)
 				procSelectObject.Call(hdc, uintptr(hFontNormal))
@@ -710,45 +993,75 @@ func wndProc(hwnd syscall.Handle, msg uintptr, wParam, lParam uintptr) uintptr {
 					contentRect.Top = 150
 					DrawTextSafe(hdc, T("🔴 Waiting for Gamepad...", "🔴 لطفاً دسته را متصل کنید..."), &contentRect, DT_LEFT|DT_TOP)
 				}
-			} else if (isAsusLaptop && currentPage == 4) || (!isAsusLaptop && currentPage == 3) {
+
+			} else if (isAsus && currentPage == 4) || (!isAsus && currentPage == 3) {
 				DrawTextSafe(hdc, T("SYSTEM TOOLS & STATUS", "ابزارهای سیستمی و وضعیت‌ها"), &contentRect, DT_LEFT|DT_TOP)
 				procSelectObject.Call(hdc, uintptr(hFontNormal))
 
 				panelColor := RGB(16, 22, 35)
 
-				drawRect(hdc, 210, 90, 490, 200, 12, panelColor)
+				drawRect(hdc, 210, 90, 490, 215, 12, panelColor)
 				setTextColor(hdc, RGB(0, 255, 150))
 				cRect1 := RECT{Left: 230, Top: 110, Right: 470, Bottom: 190}
-				DrawTextSafe(hdc, T("🔋 Battery Status", "🔋 وضعیت باتری"), &cRect1, DT_LEFT|DT_TOP)
-				setTextColor(hdc, RGB(220, 235, 255))
-				cRect1.Top += 35
-				DrawTextSafe(hdc, sysBatteryPercent, &cRect1, DT_LEFT|DT_TOP)
 
-				drawRect(hdc, 510, 90, 790, 200, 12, panelColor)
+				if isLaptop {
+					DrawTextSafe(hdc, T("🔋 Battery Status", "🔋 وضعیت باتری"), &cRect1, DT_LEFT|DT_TOP)
+					setTextColor(hdc, RGB(220, 235, 255))
+					cRect1.Top += 35
+					DrawTextSafe(hdc, sysBatteryPercent, &cRect1, DT_LEFT|DT_TOP)
+				} else {
+					DrawTextSafe(hdc, T("🔌 Power & Uptime", "🔌 منبع تغذیه و آپتایم"), &cRect1, DT_LEFT|DT_TOP)
+					setTextColor(hdc, RGB(220, 235, 255))
+					cRect1.Top += 35
+					DrawTextSafe(hdc, fmt.Sprintf("AC Power | Uptime: %s", sysUptime), &cRect1, DT_LEFT|DT_TOP)
+				}
+
+				drawRect(hdc, 510, 90, 790, 215, 12, panelColor)
 				setTextColor(hdc, RGB(0, 210, 255))
 				cRect2 := RECT{Left: 530, Top: 110, Right: 770, Bottom: 190}
 				DrawTextSafe(hdc, T("⚡ Power Plan", "⚡ مصرف انرژی"), &cRect2, DT_LEFT|DT_TOP)
 				setTextColor(hdc, RGB(220, 235, 255))
 				cRect2.Top += 35
-				DrawTextSafe(hdc, sysPowerPlan, &cRect2, DT_LEFT|DT_TOP)
 
-				drawRect(hdc, 210, 220, 490, 330, 12, panelColor)
+				if atomic.LoadUint32(&loadingButtonID) >= IDC_TOOL_PWR_SAVE && atomic.LoadUint32(&loadingButtonID) <= IDC_TOOL_PWR_HIGH {
+					DrawTextSafe(hdc, T("Applying profile...", "در حال اعمال تنظیمات..."), &cRect2, DT_LEFT|DT_TOP)
+				} else {
+					DrawTextSafe(hdc, sysPowerPlan, &cRect2, DT_LEFT|DT_TOP)
+				}
+
+				drawRect(hdc, 210, 225, 490, 350, 12, panelColor)
 				setTextColor(hdc, RGB(255, 180, 0))
-				cRect3 := RECT{Left: 230, Top: 240, Right: 470, Bottom: 320}
-				DrawTextSafe(hdc, T("☀️ Display Brightness", "☀️ روشنایی مانیتور"), &cRect3, DT_LEFT|DT_TOP)
-				setTextColor(hdc, RGB(220, 235, 255))
-				cRect3.Top += 35
-				DrawTextSafe(hdc, sysBrightness, &cRect3, DT_LEFT|DT_TOP)
+				cRect3 := RECT{Left: 230, Top: 245, Right: 470, Bottom: 320}
 
-				drawRect(hdc, 510, 220, 790, 330, 12, panelColor)
+				if isLaptop {
+					DrawTextSafe(hdc, T("☀️ Display Brightness", "☀️ روشنایی مانیتور"), &cRect3, DT_LEFT|DT_TOP)
+					drawModernProgressBar(hdc, 230, 292, 175, 10, sysBrightnessVal, RGB(255, 180, 0))
+					setTextColor(hdc, RGB(220, 235, 255))
+					cRect3Val := RECT{Left: 415, Top: 287, Right: 480, Bottom: 310}
+					DrawTextSafe(hdc, fmt.Sprintf("%d%%", sysBrightnessVal), &cRect3Val, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+				} else {
+					DrawTextSafe(hdc, T("🖥️ Display Output", "🖥️ خروجی تصویر"), &cRect3, DT_LEFT|DT_TOP)
+					setTextColor(hdc, RGB(220, 235, 255))
+					cRect3.Top += 35
+					DrawTextSafe(hdc, "External Monitor (DDC/CI)", &cRect3, DT_LEFT|DT_TOP)
+				}
+
+				drawRect(hdc, 510, 225, 790, 350, 12, panelColor)
 				setTextColor(hdc, RGB(200, 80, 255))
-				cRect4 := RECT{Left: 530, Top: 240, Right: 770, Bottom: 320}
+				cRect4 := RECT{Left: 530, Top: 245, Right: 770, Bottom: 320}
 				DrawTextSafe(hdc, T("🔊 System Volume", "🔊 وضعیت صدا"), &cRect4, DT_LEFT|DT_TOP)
+				drawModernProgressBar(hdc, 530, 292, 175, 10, sysVolumeVal, RGB(200, 80, 255))
 				setTextColor(hdc, RGB(220, 235, 255))
-				cRect4.Top += 35
-				DrawTextSafe(hdc, sysVolume, &cRect4, DT_LEFT|DT_TOP)
-			} else if (isAsusLaptop && currentPage == 5) || (!isAsusLaptop && currentPage == 4) {
-				// --- رندر کردن گرافیک تب جدید تنظیمات ---
+				cRect4Val := RECT{Left: 715, Top: 287, Right: 780, Bottom: 310}
+				DrawTextSafe(hdc, fmt.Sprintf("%d%%", sysVolumeVal), &cRect4Val, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+
+				// پنل اختصاصی و وسیع برای کارت‌های نگهداری سیستم
+				drawRect(hdc, 210, 365, 790, 580, 12, panelColor)
+				setTextColor(hdc, RGB(0, 210, 255))
+				cRect5 := RECT{Left: 230, Top: 380, Right: 770, Bottom: 420}
+				DrawTextSafe(hdc, T("🛠️ System Maintenance & AI Diagnostics", "🛠️ ابزارهای نگهداری و هوش مصنوعی"), &cRect5, DT_LEFT|DT_TOP)
+
+			} else if (isAsus && currentPage == 5) || (!isAsus && currentPage == 4) {
 				DrawTextSafe(hdc, T("APPLICATION SETTINGS", "تنظیمات نرم افزار"), &contentRect, DT_LEFT|DT_TOP)
 				procSelectObject.Call(hdc, uintptr(hFontNormal))
 
@@ -791,6 +1104,7 @@ func createAndShowGUI() {
 	hFontNormal = createModernFont(15, 400)
 	hFontTitle = createModernFont(26, 700)
 	hFontWidget = createModernFont(14, 600)
+	hFontSmall = createModernFont(12, 400) // فونت ریز برای توضیحات درون دکمه‌ها
 
 	inst, _, _ := procGetModuleHandle.Call(0)
 	className, _ := syscall.UTF16PtrFromString("SysGuardClass")
@@ -805,9 +1119,10 @@ func createAndShowGUI() {
 	}
 	procRegisterClassEx.Call(uintptr(unsafe.Pointer(&wc)))
 
+	// افزایش نامحسوس ارتفاع پنجره برای جا دادن کارت‌های بزرگ‌تر
 	hwndPtr, _, _ := procCreateWindow.Call(0, uintptr(unsafe.Pointer(className)), uintptr(unsafe.Pointer(windowName)),
 		uintptr(WS_OVERLAPPEDWINDOW|WS_VISIBLE|WS_CLIPCHILDREN), uintptr(CW_USEDEFAULT), uintptr(CW_USEDEFAULT),
-		950, 640, 0, 0, inst, 0)
+		950, 680, 0, 0, inst, 0)
 
 	hwndMain = syscall.Handle(hwndPtr)
 	setWindowIcon(hwndMain, "icon.ico")
@@ -820,11 +1135,10 @@ func createAndShowGUI() {
 	hwndTabDash = createControl(hwndMain, IDC_TAB_DASH, "BUTTON", "", WS_CHILD|WS_VISIBLE|BS_OWNERDRAW, 0, 40, 180, 55)
 	hwndTabNet = createControl(hwndMain, IDC_TAB_NET, "BUTTON", "", WS_CHILD|WS_VISIBLE|BS_OWNERDRAW, 0, 95, 180, 55)
 
-	if isAsusLaptop {
+	if isAsus {
 		hwndTabPower = createControl(hwndMain, IDC_TAB_POWER, "BUTTON", "", WS_CHILD|WS_VISIBLE|BS_OWNERDRAW, 0, 150, 180, 55)
 		hwndTabGamepad = createControl(hwndMain, IDC_TAB_GAMEPAD, "BUTTON", "", WS_CHILD|WS_VISIBLE|BS_OWNERDRAW, 0, 205, 180, 55)
 		hwndTabTools = createControl(hwndMain, IDC_TAB_TOOLS, "BUTTON", "", WS_CHILD|WS_VISIBLE|BS_OWNERDRAW, 0, 260, 180, 55)
-		// تب جدید در لپ‌تاپ‌های ایسوس
 		hwndTabSettings = createControl(hwndMain, IDC_TAB_SETTINGS, "BUTTON", "", WS_CHILD|WS_VISIBLE|BS_OWNERDRAW, 0, 315, 180, 55)
 
 		hwndBtnSilent = createControl(hwndMain, IDC_MODE_SILENT, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 230, 145, 140, 45)
@@ -837,22 +1151,27 @@ func createAndShowGUI() {
 	} else {
 		hwndTabGamepad = createControl(hwndMain, IDC_TAB_GAMEPAD, "BUTTON", "", WS_CHILD|WS_VISIBLE|BS_OWNERDRAW, 0, 150, 180, 55)
 		hwndTabTools = createControl(hwndMain, IDC_TAB_TOOLS, "BUTTON", "", WS_CHILD|WS_VISIBLE|BS_OWNERDRAW, 0, 205, 180, 55)
-		// تب جدید در سیستم‌های عادی
 		hwndTabSettings = createControl(hwndMain, IDC_TAB_SETTINGS, "BUTTON", "", WS_CHILD|WS_VISIBLE|BS_OWNERDRAW, 0, 260, 180, 55)
 	}
 
-	// ایجاد دکمه‌های داخل بخش تنظیمات
 	hwndBtnLang = createControl(hwndMain, IDC_SET_LANG, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 230, 100, 250, 50)
 	hwndBtnSoundToggle = createControl(hwndMain, IDC_SET_SOUND, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 230, 170, 250, 50)
 	hwndBtnStartup = createControl(hwndMain, IDC_SET_STARTUP, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 230, 240, 250, 50)
 
-	hwndChkWidget = createControl(hwndMain, IDC_CHK_WIDGET, "BUTTON", " Enable RGB Desktop Overlay", WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX, 210, 535, 230, 30)
+	hwndBtnPwrSave = createControl(hwndMain, IDC_TOOL_PWR_SAVE, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 520, 165, 80, 35)
+	hwndBtnPwrBal = createControl(hwndMain, IDC_TOOL_PWR_BAL, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 610, 165, 80, 35)
+	hwndBtnPwrHigh = createControl(hwndMain, IDC_TOOL_PWR_HIGH, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 700, 165, 80, 35)
 
-	hwndBtnSound = createControl(hwndMain, IDC_BTN_SOUND, "BUTTON", "", WS_CHILD|WS_VISIBLE|BS_OWNERDRAW, 460, 530, 105, 45)
-	hwndBtnDiag = createControl(hwndMain, IDC_BTN_DIAG, "BUTTON", "", WS_CHILD|WS_VISIBLE|BS_OWNERDRAW, 575, 530, 105, 45)
-	hwndBtnAnalyze = createControl(hwndMain, IDC_BTN_ANALYZE, "BUTTON", "", WS_CHILD|WS_VISIBLE|BS_OWNERDRAW, 690, 530, 105, 45)
-	hwndBtnClean = createControl(hwndMain, IDC_BTN_CLEAN, "BUTTON", "", WS_CHILD|WS_VISIBLE|BS_OWNERDRAW, 805, 530, 105, 45)
+	// ردیف اول: ۳ دکمه (صدا، کش، کلین)
+	hwndBtnSound = createControl(hwndMain, IDC_BTN_SOUND, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 230, 410, 175, 70)
+	hwndBtnDiag = createControl(hwndMain, IDC_BTN_DIAG, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 415, 410, 175, 70)
+	hwndBtnClean = createControl(hwndMain, IDC_BTN_CLEAN, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 600, 410, 175, 70)
 
+	// ردیف دوم: ۲ دکمه پهن و تخصصی (آنالیز سخت‌افزار و هوش مصنوعی)
+	hwndBtnAnalyze = createControl(hwndMain, IDC_BTN_ANALYZE, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 230, 490, 265, 70)
+	hwndBtnEventLog = createControl(hwndMain, IDC_BTN_EVENT_LOG, "BUTTON", "", WS_CHILD|BS_OWNERDRAW, 510, 490, 265, 70)
+
+	hwndChkWidget = createControl(hwndMain, IDC_CHK_WIDGET, "BUTTON", " Enable RGB Desktop Overlay", WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX, 210, 595, 230, 30)
 	hwndBtnSysInfo = createControl(hwndMain, IDC_BTN_SYSINFO, "BUTTON", "", WS_CHILD|WS_VISIBLE|BS_OWNERDRAW, 740, 40, 170, 35)
 
 	procSendMessage.Call(uintptr(hwndChkWidget), WM_SETFONT, uintptr(hFontNormal), 1)
@@ -874,4 +1193,252 @@ func createControl(parent syscall.Handle, id uint32, class, text string, style u
 		uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(text))), uintptr(style),
 		uintptr(x), uintptr(y), uintptr(width), uintptr(height), uintptr(parent), uintptr(id), inst, 0)
 	return syscall.Handle(ret)
+}
+
+func drawCustomButton(dis *DRAWITEMSTRUCT) {
+	isTab := (dis.CtlID >= 2001 && dis.CtlID <= 2006)
+	isDown := (dis.ItemState & ODS_SELECTED) != 0
+	isActiveTab := false
+
+	if dis.CtlID == IDC_TAB_DASH && currentPage == 0 {
+		isActiveTab = true
+	}
+	if dis.CtlID == IDC_TAB_NET && currentPage == 1 {
+		isActiveTab = true
+	}
+	if isAsus {
+		if dis.CtlID == IDC_TAB_POWER && currentPage == 2 {
+			isActiveTab = true
+		}
+		if dis.CtlID == IDC_TAB_GAMEPAD && currentPage == 3 {
+			isActiveTab = true
+		}
+		if dis.CtlID == IDC_TAB_TOOLS && currentPage == 4 {
+			isActiveTab = true
+		}
+		if dis.CtlID == IDC_TAB_SETTINGS && currentPage == 5 {
+			isActiveTab = true
+		}
+	} else {
+		if dis.CtlID == IDC_TAB_GAMEPAD && currentPage == 2 {
+			isActiveTab = true
+		}
+		if dis.CtlID == IDC_TAB_TOOLS && currentPage == 3 {
+			isActiveTab = true
+		}
+		if dis.CtlID == IDC_TAB_SETTINGS && currentPage == 4 {
+			isActiveTab = true
+		}
+	}
+
+	var text string
+
+	if isTab {
+		var bgColor, txtColor uint32
+		if isDown {
+			bgColor, txtColor = RGB(16, 28, 50), RGB(0, 255, 200)
+		} else if isActiveTab {
+			bgColor, txtColor = RGB(16, 22, 35), RGB(0, 230, 255)
+		} else {
+			bgColor, txtColor = RGB(5, 7, 12), RGB(100, 115, 140)
+		}
+
+		switch dis.CtlID {
+		case IDC_TAB_DASH:
+			text = T("    📊  Hardware", "    📊  سخت‌افزار")
+		case IDC_TAB_NET:
+			text = T("    🌐  Network", "    🌐  شـبکـه")
+		case IDC_TAB_POWER:
+			text = T("    ⚡  G-Helper", "    ⚡  جی‌-هلپر")
+		case IDC_TAB_GAMEPAD:
+			text = T("    🎮  Gamepad", "    🎮  دسته بازی")
+		case IDC_TAB_TOOLS:
+			text = T("    🧰  Tools", "    🧰  ابـزارها")
+		case IDC_TAB_SETTINGS:
+			text = T("    ⚙️  Settings", "    ⚙️  تنظیمات")
+		}
+
+		drawRect(uintptr(dis.Hdc), int(dis.RcItem.Left), int(dis.RcItem.Top), int(dis.RcItem.Right), int(dis.RcItem.Bottom), 0, bgColor)
+		if isActiveTab {
+			drawRect(uintptr(dis.Hdc), int(dis.RcItem.Left), int(dis.RcItem.Top), int(dis.RcItem.Left)+5, int(dis.RcItem.Bottom), 0, RGB(0, 210, 255))
+		}
+		procSelectObject.Call(uintptr(dis.Hdc), uintptr(hFontNormal))
+		procSetBkMode.Call(uintptr(dis.Hdc), uintptr(TRANSPARENT))
+		procSetTextColor.Call(uintptr(dis.Hdc), uintptr(txtColor))
+		DrawTextSafe(uintptr(dis.Hdc), text, &dis.RcItem, DT_LEFT|DT_VCENTER|DT_SINGLELINE)
+
+	} else {
+		currentLoading := atomic.LoadUint32(&loadingButtonID)
+		var borderColor, fillColor, txtColor uint32
+		var title, desc string
+		isActiveMode := false
+
+		isMaintenanceBtn := (dis.CtlID >= 1001 && dis.CtlID <= 1006) && dis.CtlID != IDC_BTN_SYSINFO
+
+		switch dis.CtlID {
+		case IDC_BTN_SOUND:
+			borderColor = RGB(200, 80, 255)
+			title = T("🔊 Audio Test", "🔊 تست کارت صدا")
+			desc = T("Wake up and test audio drivers.", "ارسال سیگنال برای تست درایور صوتی.")
+		case IDC_BTN_DIAG:
+			borderColor = RGB(0, 200, 255)
+			title = T("🔄 Force Sync", "🔄 همگام‌سازی")
+			desc = T("Syncs system clock & flushes DNS.", "تنظیم دقیق ساعت و پاکسازی کش اینترنت.")
+		case IDC_BTN_CLEAN:
+			borderColor = RGB(255, 140, 50)
+			title = T("🧹 Deep OS Clean", "🧹 پاکسازی عمیق")
+			desc = T("Clears temp files & frees up memory.", "حذف فایل‌های موقت و آزادسازی حافظه.")
+		case IDC_BTN_ANALYZE:
+			borderColor = RGB(0, 255, 150)
+			title = T("⚙️ Hardware Bottleneck", "⚙️ آنالیز گلوگاه قطعات")
+			desc = T("Analyzes 7-day telemetry to find weak components.", "تحلیل دیتای ۷ روزه برای تشخیص قطعه ضعیف سیستم.")
+		case IDC_BTN_EVENT_LOG:
+			borderColor = RGB(255, 80, 100)
+			title = T("🧠 AI Error Scanner", "🧠 هوش مصنوعی سیستم")
+			desc = T("Finds hidden OS errors via Gemini AI.", "کشف خطاهای پنهان ویندوز با هوش مصنوعی.")
+
+		case IDC_MODE_SILENT:
+			borderColor = RGB(100, 200, 255)
+			text = T("🍃 Silent", "🍃 بی‌صدا")
+			if currentPowerMode == "Silent" {
+				isActiveMode = true
+			}
+		case IDC_MODE_BALANCED:
+			borderColor = RGB(0, 210, 255)
+			text = T("🚗 Balanced", "🚗 متعادل")
+			if currentPowerMode == "Balanced" {
+				isActiveMode = true
+			}
+		case IDC_MODE_TURBO:
+			borderColor = RGB(255, 80, 100)
+			text = T("🚀 Turbo", "🚀 توربو")
+			if currentPowerMode == "Turbo" {
+				isActiveMode = true
+			}
+		case IDC_GPU_ECO:
+			borderColor = RGB(0, 255, 150)
+			text = T("🌱 Eco", "🌱 اقتصادی")
+			if currentGpuMode == "Eco" {
+				isActiveMode = true
+			}
+		case IDC_GPU_STD:
+			borderColor = RGB(0, 210, 255)
+			text = T("🌸 Standard", "🌸 استاندارد")
+			if currentGpuMode == "Standard" {
+				isActiveMode = true
+			}
+		case IDC_GPU_ULTRA:
+			borderColor = RGB(200, 100, 255)
+			text = T("⚡ Ultimate", "⚡ نهایت قدرت")
+			if currentGpuMode == "Ultimate" {
+				isActiveMode = true
+			}
+
+		case IDC_TOOL_PWR_SAVE:
+			borderColor = RGB(0, 255, 150)
+			text = T("🌱 Save", "🌱 بهینه")
+			if strings.EqualFold(sysPowerPlanGUID, "a1841308-3541-4fab-bc81-f71556f20b4a") {
+				isActiveMode = true
+			}
+		case IDC_TOOL_PWR_BAL:
+			borderColor = RGB(0, 210, 255)
+			text = T("⚖️ Bal", "⚖️ متعادل")
+			if strings.EqualFold(sysPowerPlanGUID, "381b4222-f694-41f0-9685-ff5bb260df2e") {
+				isActiveMode = true
+			}
+		case IDC_TOOL_PWR_HIGH:
+			borderColor = RGB(255, 80, 100)
+			text = T("🔥 High", "🔥 پرقدرت")
+			if strings.EqualFold(sysPowerPlanGUID, "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c") {
+				isActiveMode = true
+			}
+
+		case IDC_SET_LANG:
+			if uiLanguage == "EN" {
+				text = "🌐 Language: English"
+			} else {
+				text = "🌐 زبان نرم افزار: فارسی"
+			}
+			borderColor = RGB(0, 210, 255)
+		case IDC_SET_SOUND:
+			if uiSoundEnabled {
+				text = T("🔊 UI Click Sounds: ON", "🔊 صدای کلیک دکمه‌ها: روشن")
+				borderColor = RGB(0, 255, 150)
+				isActiveMode = true
+			} else {
+				text = T("🔇 UI Click Sounds: OFF", "🔇 صدای کلیک دکمه‌ها: خاموش")
+				borderColor = RGB(255, 80, 100)
+			}
+		case IDC_SET_STARTUP:
+			if runAtStartup {
+				text = T("🚀 Run on Startup: ON", "🚀 اجرای خودکار با ویندوز: روشن")
+				borderColor = RGB(0, 255, 150)
+				isActiveMode = true
+			} else {
+				text = T("🚀 Run on Startup: OFF", "🚀 اجرای خودکار با ویندوز: خاموش")
+				borderColor = RGB(255, 80, 100)
+			}
+		}
+
+		if currentLoading == dis.CtlID {
+			rad := globalHue * math.Pi / 180.0
+			t := (math.Sin(rad*2.0) + 1.0) / 2.0
+			if borderColor == 0 {
+				borderColor = RGB(0, 210, 255)
+			}
+			fillColor = blendColor(RGB(15, 20, 30), borderColor, t)
+			txtColor = RGB(255, 255, 255)
+		} else if isActiveMode {
+			fillColor = borderColor
+			txtColor = RGB(10, 14, 25)
+		} else {
+			isModeButton := (dis.CtlID >= 4001 && dis.CtlID <= 4006) || (dis.CtlID >= 6001 && dis.CtlID <= 6003) || dis.CtlID == IDC_SET_SOUND || dis.CtlID == IDC_SET_STARTUP
+
+			if isModeButton && !isDown {
+				borderColor = RGB(50, 60, 75)
+				txtColor = RGB(140, 150, 160)
+				fillColor = RGB(15, 20, 30)
+			} else if isDown {
+				fillColor = borderColor
+				txtColor = RGB(10, 14, 25)
+			} else {
+				fillColor = RGB(15, 20, 30)
+				txtColor = borderColor
+			}
+		}
+
+		drawRect(uintptr(dis.Hdc), int(dis.RcItem.Left), int(dis.RcItem.Top), int(dis.RcItem.Right), int(dis.RcItem.Bottom), 14, borderColor)
+		if fillColor != borderColor {
+			drawRect(uintptr(dis.Hdc), int(dis.RcItem.Left)+2, int(dis.RcItem.Top)+2, int(dis.RcItem.Right)-2, int(dis.RcItem.Bottom)-2, 12, fillColor)
+		}
+
+		// اگر دکمه‌های بزرگ نگهداری سیستم بود، دو خط مجزا رسم کن
+		if isMaintenanceBtn {
+			rTitle := RECT{Left: dis.RcItem.Left + 5, Top: dis.RcItem.Top + 12, Right: dis.RcItem.Right - 5, Bottom: dis.RcItem.Bottom}
+			procSelectObject.Call(uintptr(dis.Hdc), uintptr(hFontNormal))
+			procSetBkMode.Call(uintptr(dis.Hdc), uintptr(TRANSPARENT))
+			procSetTextColor.Call(uintptr(dis.Hdc), uintptr(txtColor))
+			DrawTextSafe(uintptr(dis.Hdc), title, &rTitle, DT_CENTER|DT_TOP|DT_SINGLELINE)
+
+			rDesc := RECT{Left: dis.RcItem.Left + 8, Top: dis.RcItem.Top + 35, Right: dis.RcItem.Right - 8, Bottom: dis.RcItem.Bottom}
+			procSelectObject.Call(uintptr(dis.Hdc), uintptr(hFontSmall))
+			descColor := uint32(RGB(140, 150, 160))
+			if isDown || currentLoading == dis.CtlID {
+				descColor = txtColor
+			}
+			procSetTextColor.Call(uintptr(dis.Hdc), uintptr(descColor))
+			DrawTextSafe(uintptr(dis.Hdc), desc, &rDesc, DT_CENTER|DT_TOP|0x00000010) // 0x10 = DT_WORDBREAK
+		} else {
+			procSelectObject.Call(uintptr(dis.Hdc), uintptr(hFontNormal))
+			procSetBkMode.Call(uintptr(dis.Hdc), uintptr(TRANSPARENT))
+			procSetTextColor.Call(uintptr(dis.Hdc), uintptr(txtColor))
+			DrawTextSafe(uintptr(dis.Hdc), text, &dis.RcItem, DT_CENTER|DT_VCENTER|DT_SINGLELINE)
+		}
+	}
+}
+
+func DrawTextSafe(hdc uintptr, text string, rect *RECT, format uint32) {
+	if utf16, err := syscall.UTF16FromString(text); err == nil {
+		procDrawText.Call(hdc, uintptr(unsafe.Pointer(&utf16[0])), uintptr(len(utf16)-1), uintptr(unsafe.Pointer(rect)), uintptr(format))
+	}
 }
